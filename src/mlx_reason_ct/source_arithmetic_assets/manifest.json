@@ -1,0 +1,35 @@
+{
+  "source_revision": "386b93e034983f6c1fc841a43833a1b6a0cd9c13",
+  "source_torch_git": "cf30153c4c131c8164ee7798e5022d810682e2cb",
+  "source_hardware": "NVIDIA GeForce RTX4090",
+  "mlx": "0.32.2",
+  "tables": {
+    "rsqrt": {
+      "file": "rsqrt.ruc"
+    },
+    "exp2_positive": {
+      "file": "exp2_positive.ruc"
+    },
+    "exp2_negative": {
+      "file": "exp2_negative.ruc"
+    },
+    "exp2_negative_direct": {
+      "file": "exp2_negative_direct.ruc"
+    },
+    "lg2": {
+      "file": "lg2.ruc"
+    },
+    "vision_rotary": {
+      "file": "vision_rotary.ruc"
+    },
+    "silu_fp32": {
+      "file": "silu_fp32.ruc"
+    },
+    "silu_bf16": {
+      "file": "silu_bf16.ruc"
+    },
+    "sigmoid_bf16": {
+      "file": "sigmoid_bf16.ruc"
+    }
+  }
+}

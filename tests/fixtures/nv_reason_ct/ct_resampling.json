@@ -1,0 +1,18 @@
+{
+  "recorded_on": {
+    "system": "Linux",
+    "machine": "x86_64"
+  },
+  "versions": {
+    "torch": "2.13.0",
+    "monai": "1.6.0",
+    "numpy": "2.3.5"
+  },
+  "seed": 165,
+  "torch_threads": 1,
+  "cases": 4,
+  "units": "HU",
+  "dtype": "float32",
+  "oracle": "MONAI AffineTransform, normalized=False, bilinear, border, align_corners=False",
+  "generator": "scripts/record_ct_resampling_reference.py"
+}

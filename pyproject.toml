@@ -1,0 +1,124 @@
+[build-system]
+requires = ["hatchling==1.29.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mlx-reason-ct"
+version = "0.3.6"
+description = "Generate reports and ask questions about 3D chest and abdomen CT, locally on Apple Silicon"
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+license = "Apache-2.0 AND MIT AND BSD-3-Clause AND LicenseRef-OpenMDW-1.1"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
+authors = [
+  { name = "Joseph Sandoval" },
+  { name = "Alfredo Sandoval Jr." },
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "Operating System :: MacOS :: MacOS X",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Scientific/Engineering :: Image Processing",
+  "Topic :: Scientific/Engineering :: Medical Science Apps.",
+]
+keywords = [
+  "mlx",
+  "apple-silicon",
+  "ct",
+  "medical-imaging",
+  "nv-reason-ct",
+  "metal",
+  "report-generation",
+  "vision-language",
+]
+dependencies = [
+  "medmlx-core==0.2.6",
+  "numpy==2.3.5",
+  "scipy==1.18.1",
+  "nibabel==5.4.2",
+  "tokenizers==0.22.2",
+  "jinja2==3.1.6",
+  "huggingface-hub==1.23.0",
+  "mlx==0.32.4; platform_system == 'Darwin' and platform_machine == 'arm64'",
+]
+
+[project.scripts]
+mlx-reason-ct = "mlx_reason_ct.cli:main"
+
+[project.optional-dependencies]
+tools = ["llguidance==1.9.1"]
+
+[project.entry-points."medmlx.models"]
+mlx-reason-ct = "mlx_reason_ct.medmlx:MODEL"
+
+[project.urls]
+Homepage = "https://medmlx.org"
+Documentation = "https://github.com/MedMLX/mlx-reason-ct/blob/v0.3.6/README.md"
+Repository = "https://github.com/MedMLX/mlx-reason-ct"
+Issues = "https://github.com/MedMLX/mlx-reason-ct/issues"
+Weights = "https://huggingface.co/MedMLX/MLX-Reason-CT"
+MedMLX = "https://github.com/MedMLX/medmlx"
+
+[dependency-groups]
+dev = ["ruff==0.15.21", "pytest==9.1.1", "pyright==1.1.414"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build]
+exclude = [
+  "**/[Aa][Gg][Ee][Nn][Tt][Ss].[Mm][Dd]",
+  "**/[Cc][Ll][Aa][Uu][Dd][Ee].[Mm][Dd]",
+  "**/[Ss][Kk][Ii][Ll][Ll].[Mm][Dd]",
+  "**/.*",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mlx_reason_ct"]
+
+[tool.uv]
+constraint-dependencies = ["setuptools>=84.1.0", "filelock>=4.2.1", ]
+environments = ["sys_platform == 'darwin' and platform_machine == 'arm64'"]
+required-environments = ["sys_platform == 'darwin' and platform_machine == 'arm64'"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+extend-exclude = ["src/mlx_reason_ct/gated_delta.py"]
+
+[tool.ruff.lint]
+extend-select = ["TID251", "TID252", "ANN401"]
+select = ["E", "F", "I", "UP"]
+
+[tool.pyright]
+include = ["scripts","src","tests"]
+extraPaths = ["src", "scripts"]
+pythonVersion = "3.13"
+typeCheckingMode = "strict"
+enableTypeIgnoreComments = false
+reportUnnecessaryTypeIgnoreComment = "error"
+
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"typing.Any" = {msg = "Use a precise type and parse untyped values at the boundary."}
+"typing_extensions.Any" = {msg = "Use a precise type and parse untyped values at the boundary."}
+
+[tool.hatch.build.targets.sdist]
+only-include = [
+  "src/mlx_reason_ct",
+  "pyproject.toml",
+  "README.md",
+  "LICENSE",
+  "THIRD_PARTY_NOTICES.md",
+]
