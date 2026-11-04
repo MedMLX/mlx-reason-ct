@@ -262,6 +262,7 @@ def test_native_projection_respects_profile_operands_and_output_dtype(
     model = object.__new__(NativeModel)
     model.precision = precision
     model.accumulate_float32 = precision == "bfloat16"
+    model.bfloat16_operands = False
     model.dtype = mx.float32 if precision == "float32" else mx.bfloat16
     name = (
         "model.vision3d.projection"

@@ -59,8 +59,10 @@ def run(
     chest/abdomen heuristic is unreliable for a given scan. Generation is greedy.
     ``precision`` selects float32 (default), bfloat16 (BF16 weights with the
     pinned source's cast and cache boundaries; not yet qualified against the
-    original BF16 model), or bfloat16_fp32 (BF16 weights with FP32 accumulation
-    and decoding).
+    original BF16 model), bfloat16_fp32 (BF16 weights with FP32 accumulation
+    and decoding), or bfloat16_fast (BF16 weights and native BF16 matmuls with
+    FP32 accumulation; other arithmetic and caches in FP32). bfloat16_fast output
+    can differ from float32.
     ``history`` continues a conversation about the same CT: already-answered
     ``(question, answer)`` turns, oldest first; ``prompt`` is the new, still-
     unanswered turn. Empty or truncated responses raise ModelExecutionError
@@ -85,7 +87,8 @@ def run(
         anatomy_region: ``chest`` (default), ``abdomen``, or None for the source
             processor's centered crop without the regional heuristic.
         precision: ``float32`` (default), ``bfloat16`` with source BF16 boundaries,
-            or ``bfloat16_fp32`` with BF16 weights and FP32 accumulation/caches.
+            ``bfloat16_fp32`` with BF16 weights and FP32 accumulation/caches, or
+            ``bfloat16_fast`` with native BF16 matmuls and FP32 elsewhere.
         history: Already-answered user/assistant turns for this CT, oldest first.
         tools: Function schemas rendered by the checkpoint's chat template; tool
             requests are returned as text and are not executed by this provider.

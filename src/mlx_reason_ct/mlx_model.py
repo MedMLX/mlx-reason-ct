@@ -2,14 +2,19 @@
 
 All learned arithmetic runs on Metal. The source_bfloat16 profile preserves
 NVIDIA's BF16 cast/cache boundaries; bfloat16 stores BF16 weights with FP32
-accumulation and decoding.
-Public bfloat16 selects source_bfloat16; public bfloat16_fp32 selects bfloat16.
+accumulation and decoding; bfloat16_matmul additionally runs multi-token
+projections as native BF16 matmuls. Every non-source profile stores the 2-D
+language-model weights as their exact BF16 values; single-token steps and the LM
+head read them through ``bf16_gemv`` in FP32 arithmetic. Public bfloat16 selects
+source_bfloat16, public bfloat16_fp32 selects bfloat16 and public bfloat16_fast
+selects bfloat16_matmul.
 Source layouts remain visible in the converted cache.
 """
 
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field
 from importlib import import_module
 from pathlib import Path
@@ -23,6 +28,7 @@ if TYPE_CHECKING:
 
 import numpy as np
 
+from mlx_reason_ct.bf16_gemv import gemv
 from mlx_reason_ct.chunk_delta import chunk_delta
 from mlx_reason_ct.errors import InvalidInputError
 from mlx_reason_ct.generation_state import cache_capacity
@@ -82,9 +88,11 @@ class DecoderCache:
 class NativeModel:
     """Pinned 3D network with bounded attention and feed-forward workspaces.
 
-    ``precision`` is a native profile name (``float32``, ``bfloat16`` or
-    ``source_bfloat16``), not the public API name; see the module docstring.
-    Weights are loaded from the converted FP32 shards and cast to the profile dtype.
+    ``precision`` is a native profile name (``float32``, ``bfloat16``,
+    ``bfloat16_matmul`` or ``source_bfloat16``), not the public API name; see the
+    module docstring. Weights are loaded from the converted FP32 shards and cast to
+    the profile dtype, except that non-source profiles keep 2-D language-model
+    weights as BF16, which holds the source values exactly.
     """
 
     def __init__(self, model_dir: Path, *, precision: str = "float32") -> None:
@@ -92,21 +100,33 @@ class NativeModel:
 
         Rejects unknown native profile names and cache tensors that are not FP32.
         """
-        if precision not in {"float32", "bfloat16", "source_bfloat16"}:
+        if precision not in {"float32", "bfloat16", "bfloat16_matmul", "source_bfloat16"}:
             raise InvalidInputError("Unsupported NV-Reason-CT precision profile")
         self.dtype: Dtype = mx.float32 if precision == "float32" else mx.bfloat16
         self.precision: str = precision
-        self.accumulate_float32: bool = precision == "bfloat16"
+        # bfloat16_matmul shares bfloat16's FP32 activations, norms, recurrence and
+        # caches, but feeds learned projections to native BF16 matmuls.
+        self.accumulate_float32: bool = precision in {"bfloat16", "bfloat16_matmul"}
+        self.bfloat16_operands: bool = precision == "bfloat16_matmul"
         self.config: dict[str, JsonValue] = json.loads((model_dir / "config.json").read_text())
         self.weights: dict[str, Array] = {}
-        for name in SHARDS:
-            self.weights.update(cast("dict[str, Array]", mx.load(str(model_dir / "mlx" / name))))
-        for name, value in self.weights.items():
-            if value.dtype != mx.float32:
-                raise InvalidInputError(f"Native cache must store FP32 tensors: {name}")
-            self.weights[name] = value.astype(self.dtype)
-        # Materialize the lazily loaded and cast weights once, up front.
-        mx.eval(*self.weights.values())
+        for shard in SHARDS:
+            loaded = cast("dict[str, Array]", mx.load(str(model_dir / "mlx" / shard)))
+            for name, value in loaded.items():
+                if value.dtype != mx.float32:
+                    raise InvalidInputError(f"Native cache must store FP32 tensors: {name}")
+                # Every learned weight is a widened BF16 value, so the non-source
+                # profiles store 2-D language-model weights as BF16 losslessly;
+                # FP32 arithmetic widens them again (see bf16_gemv).
+                compact = (
+                    self.precision != "source_bfloat16"
+                    and name.startswith("model.language_model.")
+                    and value.ndim == 2
+                )
+                loaded[name] = value.astype(mx.bfloat16 if compact else self.dtype)
+            # Materialize per shard so BF16 profiles never hold every FP32 tensor at once.
+            mx.eval(*loaded.values())
+            self.weights.update(loaded)
         self.delta = gated_delta
         self.eos_ids: tuple[int, ...] = tuple(
             json.loads((model_dir / "generation_config.json").read_text())["eos_token_id"]
@@ -210,7 +230,22 @@ class NativeModel:
                     slices=slices,
                     sliced=sliced,
                 )
-        if self.accumulate_float32:
+        if (
+            bias is None
+            and x.dtype == mx.float32
+            and weight.dtype == mx.bfloat16
+            and math.prod(x.shape[:-1]) == 1
+        ):
+            # One FP32 row against BF16-stored weights: the bandwidth-bound decode
+            # step, bit-identical to the FP32 matmul on widened weights.
+            return mx.reshape(gemv(mx.reshape(x, (-1,)), weight), (*x.shape[:-1], -1))
+        if self.bfloat16_operands:
+            # BF16 operands with MLX's FP32 accumulation; the product is rounded to
+            # BF16 once, as the source GPU's BF16 linear layers do, then widened.
+            product = (x.astype(mx.bfloat16) @ weight.T).astype(mx.float32)
+            return product if bias is None else product + bias.astype(mx.float32)
+        if self.accumulate_float32 or weight.dtype != x.dtype:
+            # Widening BF16-stored weights is exact; FP32 prefill keeps MLX's FP32 matmul.
             weight = weight.astype(mx.float32)
             if bias is not None:
                 bias = bias.astype(mx.float32)
@@ -264,26 +299,19 @@ class NativeModel:
         """
         if q.dtype == mx.bfloat16:
             return source_arithmetic.attention(q, k, v, causal=causal, offset=offset)
-        # Bound the materialized score workspace even when a backend cannot fuse SDPA.
-        outputs: list[Array] = []
-        for start in range(0, q.shape[2], 256):
-            end = min(start + 256, q.shape[2])
-            mask = None
-            if causal:
-                mask = (
-                    mx.arange(k.shape[2])[None, :]
-                    <= mx.arange(offset + start, offset + end)[:, None]
-                )
-            result = mx.fast.scaled_dot_product_attention(
-                q[:, :, start:end],
-                k,
-                v,
-                scale=q.shape[-1] ** -0.5,
-                mask=mask,
+        scale = q.shape[-1] ** -0.5
+        if q.shape[2] > 1:
+            # One fused call over all queries: measured bit-identical to 256-query
+            # blocks on Metal, and the score matrix is never materialized. "causal" is aligned
+            # lower-right, which is query i -> keys 0..offset + i when the keys
+            # are exactly the cached prefix plus this call's tokens.
+            if causal and k.shape[2] != offset + q.shape[2]:
+                raise InvalidInputError("Causal attention keys must cover offset plus queries")
+            return mx.fast.scaled_dot_product_attention(
+                q, k, v, scale=scale, mask="causal" if causal else None, force_fused=True
             )
-            mx.eval(result)
-            outputs.append(result)
-        return mx.concatenate(outputs, axis=2)
+        mask = mx.arange(k.shape[2])[None, :] <= offset if causal else None
+        return mx.fast.scaled_dot_product_attention(q, k, v, scale=scale, mask=mask)
 
     def vision(self, pixels: Array) -> tuple[Array, Array]:
         """Encode one CT crop into visual features and decoder-space embeddings.
@@ -547,7 +575,7 @@ class NativeModel:
     def embed(self, ids: Array) -> Array:
         """Look up token embeddings for integer ``ids``."""
         value = self.weights["model.language_model.embed_tokens.weight"][ids]
-        return value.astype(mx.float32) if self.accumulate_float32 else value
+        return value if self.precision == "source_bfloat16" else value.astype(mx.float32)
 
     def decode(
         self, embeddings: Array, positions: Array, cache: DecoderCache | None = None
@@ -561,6 +589,10 @@ class NativeModel:
         """
         if cache is None:
             cache = DecoderCache()
+        # Prefill materializes per layer and FFN chunk to bound workspace. A
+        # one-token step stays lazy so the caller can pipeline whole steps;
+        # evaluation boundaries do not change which kernels run.
+        step = embeddings.shape[1] == 1
         x = embeddings.astype(mx.float32 if self.accumulate_float32 else self.dtype)
         for i in range(32):
             p = f"model.language_model.layers.{i}"
@@ -582,8 +614,12 @@ class NativeModel:
             h = self.rms(x, p + ".post_attention_layernorm")
             # Feed-forward rows are evaluated in chunks to bound peak workspace memory.
             chunks: list[Array] = []
-            for start in range(0, h.shape[1], 256):
-                part = h[:, start : start + 256]
+            # With MLX 0.32.4 on Metal, FP32 matmul rows were bit-identical at 256 and
+            # 2048 rows per chunk but not at 4096 or more, which selects other kernels.
+            # The FP32-arithmetic profiles use 2048; source BF16 keeps its 256 rows.
+            rows = 256 if self.precision == "source_bfloat16" else 2048
+            for start in range(0, h.shape[1], rows):
+                part = h[:, start : start + rows]
                 part = self.linear(
                     self.silu(
                         self.linear(
@@ -596,18 +632,23 @@ class NativeModel:
                     p + ".mlp.down_proj",
                     source_length=h.shape[1],
                 )
-                mx.eval(part)
+                if not step:
+                    mx.eval(part)
                 chunks.append(part)
-            x = x + mx.concatenate(chunks, axis=1)
-            mx.eval(x, *cache.layers[i].values())
+            x = x + (chunks[0] if len(chunks) == 1 else mx.concatenate(chunks, axis=1))
+            if not step:
+                mx.eval(x, *cache.layers[i].values())
         cache.offset += embeddings.shape[1]
         x = self.rms(x, "model.language_model.norm")
-        mx.eval(x)
+        if not step:
+            mx.eval(x)
         return x, cache
 
     def logits(self, hidden: Array) -> Array:
         """Project hidden states to vocabulary logits with the tied embedding matrix."""
         weight = self.weights["model.language_model.embed_tokens.weight"]
-        if self.accumulate_float32:
+        if hidden.dtype == mx.float32 and weight.dtype == mx.bfloat16:
+            if math.prod(hidden.shape[:-1]) == 1:
+                return mx.reshape(gemv(mx.reshape(hidden, (-1,)), weight), (*hidden.shape[:-1], -1))
             weight = weight.astype(mx.float32)
         return hidden @ weight.T

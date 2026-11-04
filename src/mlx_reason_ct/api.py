@@ -31,6 +31,7 @@ PRECISION_PROFILES: dict[str, str] = {
     "float32": "float32",
     "bfloat16": "source_bfloat16",
     "bfloat16_fp32": "bfloat16",
+    "bfloat16_fast": "bfloat16_matmul",
 }
 
 
@@ -76,7 +77,7 @@ def validate_generation_options(
     if not isinstance(cast(object, precision), str) or precision not in PRECISION_PROFILES:
         raise InvalidInputError(
             "Unsupported NV-Reason-CT MLX precision profile; "
-            "choose float32, bfloat16 or bfloat16_fp32."
+            "choose float32, bfloat16, bfloat16_fp32 or bfloat16_fast."
         )
     if anatomy_region is not None and anatomy_region not in {"chest", "abdomen"}:
         raise InvalidInputError("anatomy_region must be chest, abdomen, or None")
@@ -211,28 +212,52 @@ def generate(
     initial_bytes = cache.nbytes
     growth: list[dict[str, int]] = [{"decoded_tokens": 0, "cache_bytes": initial_bytes}]
     output: list[int] = []
+
+    def launch(values: Array) -> tuple[Array, Array]:
+        """Queue the finiteness check and greedy choice without waiting for them."""
+        finite, choice = mx.all(mx.isfinite(values)), mx.argmax(values[0, -1])
+        mx.async_eval(finite, choice, *cache.arrays())
+        return finite, choice
+
+    # Unconstrained greedy decoding keeps the chosen token on the GPU and queues
+    # step n + 1 before reading token n, so graph construction overlaps the
+    # previous step. A step queued after the final EOS is discarded; it never
+    # changes emitted tokens. Constrained sampling needs host logits per step.
+    pending = launch(logit) if constraint is None else None
+    fed_bytes = initial_bytes
     for index in range(max_new_tokens):
-        if not bool(mx.all(mx.isfinite(logit)).item()):
-            raise ModelExecutionError("NV-Reason-CT produced nonfinite logits")
-        token = (
-            int(cast(int, mx.argmax(logit[0, -1]).item()))
-            if constraint is None
-            else constraint.sample(logit[0, -1], model.eos_ids)
-        )
+        fed_bytes = cache.nbytes
+        if pending is not None:
+            finite, choice = pending
+            if index + 1 < max_new_tokens:
+                # Image tokens consume fewer MRoPE positions than sequence slots, so
+                # new text positions are the cache length shifted by rope_delta.
+                position = mx.full((3, 1, 1), cache.offset + inputs.rope_delta, dtype=mx.int64)
+                hidden, cache = model.decode(
+                    model.embed(mx.reshape(choice, (1, 1))), position, cache
+                )
+                pending = launch(model.logits(hidden))
+            if not bool(finite.item()):
+                raise ModelExecutionError("NV-Reason-CT produced nonfinite logits")
+            token = int(cast(int, choice.item()))
+        else:
+            assert constraint is not None
+            if not bool(mx.all(mx.isfinite(logit)).item()):
+                raise ModelExecutionError("NV-Reason-CT produced nonfinite logits")
+            token = constraint.sample(logit[0, -1], model.eos_ids)
         output.append(token)
         if token in model.eos_ids or index + 1 == max_new_tokens:
             break
-        # Image tokens consume fewer MRoPE positions than sequence slots, so new text
-        # positions are the cache length shifted by rope_delta.
-        position = mx.full((3, 1, 1), cache.offset + inputs.rope_delta, dtype=mx.int64)
-        hidden, cache = model.decode(model.embed(mx.array([[token]])), position, cache)
-        logit = model.logits(hidden)
-        mx.eval(logit, *cache.arrays())
+        if pending is None:
+            position = mx.full((3, 1, 1), cache.offset + inputs.rope_delta, dtype=mx.int64)
+            hidden, cache = model.decode(model.embed(mx.array([[token]])), position, cache)
+            logit = model.logits(hidden)
+            mx.eval(logit, *cache.arrays())
         if len(output) in {1, 8, 32, 128, 256, 512, 1024, 2048, 4096}:
             growth.append({"decoded_tokens": len(output), "cache_bytes": cache.nbytes})
     mx.synchronize()
     # The last sampled token is never fed back, so the cache holds one fewer token.
-    growth.append({"decoded_tokens": len(output) - 1, "cache_bytes": cache.nbytes})
+    growth.append({"decoded_tokens": len(output) - 1, "cache_bytes": fed_bytes})
     complete = bool(output) and output[-1] in model.eos_ids
     return output, {
         "generated_tokens": len(output),
@@ -339,6 +364,9 @@ def generate_report(
         inputs,
         embeddings,
         max_new_tokens=max_new_tokens,
+        # Preallocated 256-token KV chunks: concatenating at a ~14k-token CT
+        # context allocates new K/V for every decoded token.
+        cache_chunk_size=256,
         constraint=constraint,
     )
     return _finish_report(
@@ -386,9 +414,11 @@ def _finish_report(
             "peak_mlx_memory_bytes": int(mx.get_peak_memory()),
             "precision": precision,
             "learned_weight_dtype": str(model.dtype),
-            "decoder_arithmetic": "bfloat16" if precision == "bfloat16" else "float32",
+            "decoder_arithmetic": {"bfloat16": "bfloat16", "bfloat16_fast": "bfloat16_matmul"}.get(
+                precision, "float32"
+            ),
             "native_arithmetic_profile": native_profile,
-            "synchronization": "mx.eval per layer/token and mx.synchronize",
+            "synchronization": "prefill eval per layer; decode async_eval per token",
             "anatomy_region": anatomy_region,
             "prior_turns": prior_turns,
         }

@@ -193,7 +193,10 @@ def chunk_delta(
             state * exponential(gi[..., -1, None, None])
             + (ki * exponential(gi[..., -1, None] - gi)[..., None]).swapaxes(-1, -2) @ new
         )
-        mx.eval(part, state)
+        # Materialize every 16 chunks: bounds the lazy graph without a host sync
+        # per 64 tokens. Evaluation points do not change the kernels that run.
+        if i % 16 == 15:
+            mx.eval(part, state)
         output.append(part)
     result = mx.transpose(mx.concatenate(output, axis=2)[:, :, :length], (0, 2, 1, 3))
     return result, mx.contiguous(state.swapaxes(-1, -2))

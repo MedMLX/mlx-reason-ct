@@ -61,8 +61,9 @@ copy, pass a folder with the converted runtime files and the `mlx/` shard layout
 `details.weights_revision` records the downloaded commit, or `null` for a folder without
 a MedMLX download record.
 
-The FP32 weights occupy 17.4 GB. Peak MLX memory is about 22.7 GB; allow more for
-preprocessing, macOS and other applications. Crop whole-body scans to the chest or
+The FP32 weights occupy 17.4 GB on disk; the decoder weights are held in memory as
+their exact BF16 values. Peak MLX memory for a `float32` chest report is about 13.7 GB;
+allow more for preprocessing, macOS and other applications. Crop whole-body scans to the chest or
 abdomen before running.
 
 ### Command line
@@ -112,9 +113,14 @@ generation failures `ModelExecutionError`.
 
 | `precision` | Weights and arithmetic |
 | --- | --- |
-| `float32` (default) | FP32 weights, activations and caches |
+| `float32` (default) | FP32 arithmetic, activations and caches; decoder weights held as their exact BF16 values |
 | `bfloat16` | Source BF16 weights, casts and cache boundaries |
 | `bfloat16_fp32` | BF16 weights with FP32 accumulation and decoding |
+| `bfloat16_fast` | BF16 projection operands with FP32 accumulation for the CT and prompt; FP32 arithmetic for generated tokens, the LM head, norms, recurrence, attention and caches |
+
+`bfloat16_fast` has the fastest image encoding and prompt processing.
+Its text can differ from `float32`: BF16 operand rounding can change a greedy choice
+where the two most likely tokens are nearly tied, and the report then continues differently.
 
 The published bundle expands NVIDIA's BF16 weights to FP32 without retraining.
 Decoding is greedy. Inference needs Apple Silicon with Metal and has no CPU fallback.
