@@ -94,7 +94,6 @@ class Mlx(Protocol):
     float32: Dtype
     int32: Dtype
     int64: Dtype
-    uint16: Dtype
     uint32: Dtype
     fast: Fast
 
@@ -217,9 +216,6 @@ class Mlx(Protocol):
     def transpose(
         self, a: Array, /, axes: Sequence[int] | None = None, *, stream: mx.StreamOrDevice = None
     ) -> Array: ...
-    def tile(
-        self, a: Array, reps: int | Sequence[int], /, *, stream: mx.StreamOrDevice = None
-    ) -> Array: ...
     def where(
         self,
         condition: Scalar | Array,
@@ -230,13 +226,6 @@ class Mlx(Protocol):
         stream: mx.StreamOrDevice = None,
     ) -> Array: ...
     def zeros(
-        self,
-        shape: int | Sequence[int],
-        dtype: Dtype | None = mx.float32,
-        *,
-        stream: mx.StreamOrDevice = None,
-    ) -> Array: ...
-    def ones(
         self,
         shape: int | Sequence[int],
         dtype: Dtype | None = mx.float32,

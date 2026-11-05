@@ -33,6 +33,6 @@ class BundleManifest(TypedDict):
     revision: str
     dtype: str
     conversion: str
-    shards: list[str]
+    shards: list[str] | dict[str, str]
     excluded_source_tensors: list[str]
     exclusion_reason: str

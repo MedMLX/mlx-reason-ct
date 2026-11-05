@@ -13,7 +13,7 @@ from medmlx_core.errors import (
     MissingDependencyError,
     ModelExecutionError,
 )
-from medmlx_core.weights import weights_dir, weights_revision
+from medmlx_core.weights import weights_dir
 
 from mlx_reason_ct._payloads import JsonValue
 from mlx_reason_ct.response import ReportFiles
@@ -164,5 +164,4 @@ def run(
         raise ModelExecutionError(
             f"NV-Reason-CT generation failed: {error}; check output permissions and Metal memory.",
         ) from error
-    details.setdefault("weights_revision", weights_revision(weights))
     return {"outputs": files.outputs(), "details": details}

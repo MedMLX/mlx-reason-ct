@@ -1,7 +1,8 @@
 """Runner arguments are checked before any weight download."""
 
+from collections.abc import Callable
 from pathlib import Path
-from typing import NoReturn
+from typing import NoReturn, cast
 
 import pytest
 
@@ -39,5 +40,7 @@ def test_run_rejects_invalid_inputs_before_downloading(
         if key in {"image_path", "output_dir"} and isinstance(value, str):
             value = tmp_path / value
         arguments[key] = value
+    # Invalid argument types are the point of this test, so call without static checks.
+    run = cast(Callable[..., object], medmlx.run)
     with pytest.raises(InvalidInputError):
-        medmlx.run(**arguments)  # pyright: ignore[reportArgumentType]
+        run(**arguments)

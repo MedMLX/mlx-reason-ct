@@ -4,13 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Protocol
+from typing import Literal, Protocol
 
 import numpy as np
 from numpy.typing import NDArray
-
-if TYPE_CHECKING:
-    from tokenizers.models import WordLevel
 
 type HostArray = NDArray[np.generic]
 type FloatArray = NDArray[np.float32]
@@ -20,7 +17,6 @@ type Affine = NDArray[np.float64]
 class NiftiHeader(Protocol):
     def get_xyzt_units(self) -> tuple[str, str]: ...
     def set_xyzt_units(self, xyz: str) -> None: ...
-    def set_slope_inter(self, slope: float, inter: float) -> None: ...
 
 
 class ArrayBuffer(Protocol):
@@ -37,8 +33,6 @@ class NiftiImage(Protocol):
 
     def get_qform(self, *, coded: Literal[True]) -> tuple[Affine | None, int]: ...
     def get_sform(self, *, coded: Literal[True]) -> tuple[Affine | None, int]: ...
-    def set_qform(self, affine: HostArray | None, *, code: int) -> None: ...
-    def set_sform(self, affine: HostArray | None, *, code: int) -> None: ...
 
 
 class Orientations(Protocol):
@@ -73,24 +67,16 @@ class Encoding(Protocol):
 
 
 class TokenizerContract(Protocol):
-    def add_special_tokens(self, tokens: list[str]) -> int: ...
     def no_padding(self) -> None: ...
     def no_truncation(self) -> None: ...
     def token_to_id(self, token: str) -> int | None: ...
     def encode(self, sequence: str, *, add_special_tokens: bool) -> Encoding: ...
     def decode(self, ids: list[int], *, skip_special_tokens: bool) -> str: ...
-    def save(self, path: str) -> None: ...
 
 
 class TokenizerFactory(Protocol):
-    def __call__(self, model: WordLevel) -> TokenizerContract: ...
     def from_file(self, path: str) -> TokenizerContract: ...
-
-
-class TokenizerModels(Protocol):
-    def WordLevel(self, vocab: dict[str, int], *, unk_token: str) -> WordLevel: ...
 
 
 class Tokenizers(Protocol):
     Tokenizer: TokenizerFactory
-    models: TokenizerModels

@@ -66,8 +66,9 @@ def read_manifest(model_dir: Path) -> BundleManifest:
         raise InvalidInputError("MLX-Reason-CT cache provenance differs from the pinned conversion")
     inventory = cast(object, manifest.get("shards", []))
     if not isinstance(inventory, list | dict):
-        raise InvalidInputError("MLX-Reason-CT cache shard inventory must be a list")
-    # Bundles converted before shard hashes were dropped list them as mapping keys.
+        raise InvalidInputError("MLX-Reason-CT cache shard inventory must be a list or mapping")
+    # The published bundle maps shard names to digests, which are not read; a
+    # plain list of names is also accepted. Only the names are checked.
     shards = list(cast(list[str] | dict[str, str], inventory))
     if set(shards) != set(SHARDS):
         raise InvalidInputError("MLX-Reason-CT cache has an invalid shard inventory")

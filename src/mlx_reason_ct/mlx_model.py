@@ -20,8 +20,6 @@ from importlib import import_module
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from mlx_reason_ct._payloads import JsonValue
-
 if TYPE_CHECKING:
     from mlx_reason_ct import gated_delta, source_arithmetic
     from mlx_reason_ct._native_types import Array, Dtype, Mlx, NeuralRuntime
@@ -96,7 +94,7 @@ class NativeModel:
     """
 
     def __init__(self, model_dir: Path, *, precision: str = "float32") -> None:
-        """Load the configs and FP32 shards, then cast weights to the profile dtype.
+        """Load the generation config and FP32 shards, then cast weights to the profile dtype.
 
         Rejects unknown native profile names and cache tensors that are not FP32.
         """
@@ -108,7 +106,6 @@ class NativeModel:
         # caches, but feeds learned projections to native BF16 matmuls.
         self.accumulate_float32: bool = precision in {"bfloat16", "bfloat16_matmul"}
         self.bfloat16_operands: bool = precision == "bfloat16_matmul"
-        self.config: dict[str, JsonValue] = json.loads((model_dir / "config.json").read_text())
         self.weights: dict[str, Array] = {}
         for shard in SHARDS:
             loaded = cast("dict[str, Array]", mx.load(str(model_dir / "mlx" / shard)))

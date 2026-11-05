@@ -270,8 +270,6 @@ def load_anatomy_ct(
     """
     nib = cast(Nibabel, import_module("nibabel"))
     values, source_affine = load_ct(path)
-    if values.ndim != 3 or not np.isfinite(values).all():
-        raise ValueError("CT input must be a finite scalar 3D HU volume")
     transform = nib.orientations.ornt_transform(
         nib.orientations.io_orientation(source_affine),
         nib.orientations.axcodes2ornt("LPS"),

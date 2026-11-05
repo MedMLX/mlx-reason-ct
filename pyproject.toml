@@ -67,9 +67,6 @@ MedMLX = "https://github.com/MedMLX/medmlx"
 [dependency-groups]
 dev = ["ruff==0.15.21", "pytest==9.1.1", "pyright==1.1.414"]
 
-[tool.hatch.metadata]
-allow-direct-references = true
-
 [tool.hatch.build]
 exclude = [
   "**/[Aa][Gg][Ee][Nn][Tt][Ss].[Mm][Dd]",
@@ -96,8 +93,8 @@ extend-select = ["TID251", "TID252", "ANN401"]
 select = ["E", "F", "I", "UP"]
 
 [tool.pyright]
-include = ["scripts","src","tests"]
-extraPaths = ["src", "scripts"]
+include = ["src", "tests"]
+extraPaths = ["src"]
 pythonVersion = "3.13"
 typeCheckingMode = "strict"
 enableTypeIgnoreComments = false
