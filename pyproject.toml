@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mlx-reason-ct"
-version = "0.4.0"
+version = "0.4.1"
 description = "Generate reports and ask questions about 3D chest and abdomen CT, locally on Apple Silicon"
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
@@ -37,7 +37,7 @@ keywords = [
   "vision-language",
 ]
 dependencies = [
-  "medmlx-core==0.2.6",
+  "medmlx-core>=0.2.6,<0.3",
   "numpy==2.3.5",
   "scipy==1.18.1",
   "nibabel==5.4.2",
@@ -58,7 +58,7 @@ mlx-reason-ct = "mlx_reason_ct.medmlx:MODEL"
 
 [project.urls]
 Homepage = "https://medmlx.org"
-Documentation = "https://github.com/MedMLX/mlx-reason-ct/blob/v0.4.0/README.md"
+Documentation = "https://github.com/MedMLX/mlx-reason-ct/blob/v0.4.1/README.md"
 Repository = "https://github.com/MedMLX/mlx-reason-ct"
 Issues = "https://github.com/MedMLX/mlx-reason-ct/issues"
 Weights = "https://huggingface.co/MedMLX/MLX-Reason-CT"
