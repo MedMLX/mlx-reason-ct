@@ -62,7 +62,7 @@ copy, pass a folder with the converted runtime files and the `mlx/` shard layout
 a MedMLX download record.
 
 The FP32 weights occupy 17.4 GB on disk; the decoder weights are held in memory as
-their exact BF16 values. Peak MLX memory for a `float32` chest report is about 13.7 GB;
+their exact BF16 values. Peak MLX memory for a `float32` chest or abdomen report is about 14.4 GB;
 allow more for preprocessing, macOS and other applications. Crop whole-body scans to the chest or
 abdomen before running.
 

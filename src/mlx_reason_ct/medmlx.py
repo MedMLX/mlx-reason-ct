@@ -24,7 +24,9 @@ MODEL: dict[str, str | float] = {
     "task": "generation",
     "run": "mlx_reason_ct.medmlx:run",
     "summary": "CT reporting and question answering with NV-Reason-CT on Metal; FP32 by default.",
-    "peak_memory_gb": 22.7,
+    # Measured MLX peak for a float32 report on chest and abdominal CT; the model
+    # resamples every scan to one grid, so the peak does not grow with the input.
+    "peak_memory_gb": 14.5,
 }
 
 
