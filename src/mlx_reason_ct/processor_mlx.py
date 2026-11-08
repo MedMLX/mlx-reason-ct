@@ -59,6 +59,43 @@ def _tool_context(
     return declarations, turns
 
 
+def _tojson(
+    value: object,
+    ensure_ascii: bool = False,
+    indent: int | None = None,
+    separators: tuple[str, str] | None = None,
+    sort_keys: bool = False,
+) -> str:
+    """Transformers 5.6.2's chat-template ``tojson`` filter.
+
+    Jinja's built-in filter sorts keys and HTML-escapes ``<``, ``>``, ``&`` and
+    ``'``. Transformers replaces it with plain ``json.dumps`` that keeps key order
+    and non-ASCII text, so tool schemas reach the pinned template in that form.
+    """
+    return json.dumps(
+        value, ensure_ascii=ensure_ascii, indent=indent, separators=separators, sort_keys=sort_keys
+    )
+
+
+def chat_template(source: str) -> Template:
+    """Compile a chat template in the environment Transformers 5.6.2 renders it in.
+
+    Matches ``_compile_jinja_template``: sandboxed, ``trim_blocks`` and
+    ``lstrip_blocks``, loop controls, the Transformers ``tojson`` filter, and a
+    ``raise_exception`` global, which raises ``InvalidPromptError`` here.
+    """
+    environment = ImmutableSandboxedEnvironment(
+        trim_blocks=True, lstrip_blocks=True, extensions=["jinja2.ext.loopcontrols"]
+    )
+
+    def fail(message: str) -> None:
+        raise InvalidPromptError(message)
+
+    cast(dict[str, object], environment.filters)["tojson"] = _tojson
+    cast(dict[str, object], environment.globals)["raise_exception"] = fail
+    return environment.from_string(source)
+
+
 @dataclass(frozen=True)
 class VolumePrompt:
     """Tokenized single-CT request; ``T`` is the prompt length after image expansion.
@@ -148,17 +185,7 @@ class Processor:
         self.grid: tuple[int, int, int] = tuple(config["final_grid_size"])
         self.spacing: tuple[float, float, float] = tuple(config["pixdim"])
         self.shape: tuple[int, int, int] = tuple(config["spatial_size"])
-        environment = ImmutableSandboxedEnvironment(
-            trim_blocks=True, lstrip_blocks=True, extensions=["jinja2.ext.loopcontrols"]
-        )
-
-        def fail(message: str) -> None:
-            raise InvalidPromptError(message)
-
-        cast(dict[str, object], environment.globals)["raise_exception"] = fail
-        self.template: Template = environment.from_string(
-            (model_dir / "chat_template.jinja").read_text()
-        )
+        self.template: Template = chat_template((model_dir / "chat_template.jinja").read_text())
 
     def prompt(
         self,
