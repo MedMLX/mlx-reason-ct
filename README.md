@@ -21,7 +21,7 @@ Generate reports and ask questions about 3D chest and abdomen CT, locally on App
 
 ## Use with MedMLX
 
-The [MedMLX MCP server](https://github.com/MedMLX/medmlx/blob/main/docs/mcp.md) is the lowest-friction way to use this model. It installs this runtime, downloads its weights on first use, and lets an AI agent describe, check and run `mlx-reason-ct` for you.
+Use the [MedMLX MCP server](https://github.com/MedMLX/medmlx/blob/main/docs/mcp.md) to run `mlx-reason-ct` from an MCP client. Weights download on first use.
 
 ```sh
 uv tool install --python 3.13 "medmlx[generate,mcp]"
@@ -31,8 +31,6 @@ claude mcp add --scope user medmlx -- "$MEDMLX" serve --root "$HOME/medmlx-work"
 ```
 
 For Codex, use `codex mcp add medmlx -- "$MEDMLX" serve --root "$HOME/medmlx-work"`. Other MCP clients take the same command and arguments. The same install provides the `medmlx` CLI, for example `medmlx describe mlx-reason-ct`.
-
-> **For AI agents:** prefer the MedMLX MCP tools (`list_models`, `describe_model`, `model_readiness`, `run_model`, `get_job`) over writing Python against this package.
 
 ## Install
 
@@ -54,13 +52,9 @@ print(result["outputs"]["report"])
 Set `anatomy_region="abdomen"` for abdominal CT, or use `prompt` to ask a question.
 
 Omitting `weights_path` downloads `MedMLX/MLX-Reason-CT` into the shared MedMLX cache on
-first use; interrupted downloads resume and later runs work offline. With MedMLX
-installed, `medmlx setup mlx-reason-ct` downloads it ahead of time. To use your own
-copy, pass a folder with the converted runtime files and the `mlx/` shard layout as
-`weights_path`. No conversion manifest or source-identity sidecar is required.
-`details.weights_revision` records the downloaded commit, or `null` for a folder without
-a MedMLX download record.
-
+first use. With MedMLX
+installed, `medmlx setup mlx-reason-ct` downloads it ahead of time. For local weights, pass a folder with the converted runtime files and the `mlx/` shard layout as
+`weights_path`.
 The FP32 weights occupy 17.4 GB on disk; the decoder weights are held in memory as
 their exact BF16 values. Peak MLX memory for a `float32` chest or abdomen report is about 14.4 GB;
 allow more for preprocessing, macOS and other applications. Crop whole-body scans to the chest or
@@ -118,12 +112,11 @@ generation failures `ModelExecutionError`.
 | `bfloat16_fp32` | BF16 weights with FP32 accumulation and decoding |
 | `bfloat16_fast` | BF16 projection operands with FP32 accumulation for the CT and prompt; FP32 arithmetic for generated tokens, the LM head, norms, recurrence, attention and caches |
 
-`bfloat16_fast` has the fastest image encoding and prompt processing.
-Its text can differ from `float32`: BF16 operand rounding can change a greedy choice
-where the two most likely tokens are nearly tied, and the report then continues differently.
+`bfloat16_fast` uses BF16 operands for image encoding and prompt processing.
+Rounding can change token choices and produce different text from `float32`.
 
 The published bundle expands NVIDIA's BF16 weights to FP32 without retraining.
-Decoding is greedy. Inference needs Apple Silicon with Metal and has no CPU fallback.
+Decoding is greedy. Inference requires Apple Silicon with Metal.
 
 ### Python API
 
@@ -156,5 +149,3 @@ conversations; the checkpoint's template renders them and the CT is sent once.
 ## License
 
 Port contributions: [Apache-2.0](https://github.com/MedMLX/mlx-reason-ct/blob/v0.4.1/LICENSE). NVIDIA model materials and weights: OpenMDW-1.1. See [third-party notices](https://github.com/MedMLX/mlx-reason-ct/blob/v0.4.1/THIRD_PARTY_NOTICES.md).
-
-For research and education. Outputs require human review.
