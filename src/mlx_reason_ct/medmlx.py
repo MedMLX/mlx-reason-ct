@@ -23,10 +23,11 @@ MODEL: dict[str, str | float] = {
     "label": "NV-Reason-CT",
     "task": "generation",
     "run": "mlx_reason_ct.medmlx:run",
-    "summary": "CT reporting and question answering with NV-Reason-CT on Metal; FP32 by default.",
-    # Measured MLX peak for a float32 report on chest and abdominal CT; the model
-    # resamples every scan to one grid, so the peak does not grow with the input.
-    "peak_memory_gb": 14.5,
+    "summary": "CT reporting and question answering with NV-Reason-CT on Metal; BF16 weights.",
+    # Measured MLX peaks: 12.19 GB for bfloat16_fast chest and abdominal reports,
+    # 12.46 GB for source bfloat16. The model resamples every scan to one grid, so
+    # the peak does not grow with the input.
+    "peak_memory_gb": 12.5,
 }
 
 
@@ -40,7 +41,7 @@ def run(
     anatomy_region: str | None = "chest",
     enable_thinking: bool = False,
     max_new_tokens: int = 512,
-    precision: str = "float32",
+    precision: str = "bfloat16_fast",
     history: Sequence[tuple[str, str]] | None = None,
     tools: Sequence[Mapping[str, JsonValue]] | None = None,
     tool_history: Sequence[Mapping[str, str]] | None = None,
@@ -59,12 +60,10 @@ def run(
     ``anatomy_region`` (chest or abdomen) is requested. Pass ``anatomy_region=None``
     for the pinned processor's own centered crop, used upstream when the
     chest/abdomen heuristic is unreliable for a given scan. Generation is greedy.
-    ``precision`` selects float32 (default), bfloat16 (BF16 weights with the
-    pinned source's cast and cache boundaries; not yet qualified against the
-    original BF16 model), bfloat16_fp32 (BF16 weights with FP32 accumulation
-    and decoding), or bfloat16_fast (BF16 weights and native BF16 matmuls with
-    FP32 accumulation; other arithmetic and caches in FP32). bfloat16_fast output
-    can differ from float32.
+    ``precision`` selects bfloat16_fast (default; native BF16 matmuls with FP32
+    accumulation for the CT and prompt, FP32 arithmetic and caches elsewhere) or
+    bfloat16 (the pinned source's BF16 cast and cache boundaries, reproduced
+    step by step; slower).
     ``history`` continues a conversation about the same CT: already-answered
     ``(question, answer)`` turns, oldest first; ``prompt`` is the new, still-
     unanswered turn. Empty or truncated responses raise ModelExecutionError
@@ -88,9 +87,8 @@ def run(
         prompt: New question or instruction; None requests a structured regional report.
         anatomy_region: ``chest`` (default), ``abdomen``, or None for the source
             processor's centered crop without the regional heuristic.
-        precision: ``float32`` (default), ``bfloat16`` with source BF16 boundaries,
-            ``bfloat16_fp32`` with BF16 weights and FP32 accumulation/caches, or
-            ``bfloat16_fast`` with native BF16 matmuls and FP32 elsewhere.
+        precision: ``bfloat16_fast`` (default) with native BF16 matmuls and FP32
+            elsewhere, or ``bfloat16`` with source BF16 boundaries.
         history: Already-answered user/assistant turns for this CT, oldest first.
         tools: Function schemas rendered by the checkpoint's chat template; tool
             requests are returned as text and are not executed by this provider.

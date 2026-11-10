@@ -252,7 +252,7 @@ def test_native_rms_mean_matches_mac_reference(
 
 
 @pytest.mark.parametrize("tower", ["vision3d", "language_model"])
-@pytest.mark.parametrize("precision", ["float32", "bfloat16", "source_bfloat16"])
+@pytest.mark.parametrize("precision", ["bfloat16_matmul", "source_bfloat16"])
 def test_native_projection_respects_profile_operands_and_output_dtype(
     reference: ArithmeticReference, tower: str, precision: str
 ) -> None:
@@ -261,9 +261,8 @@ def test_native_projection_respects_profile_operands_and_output_dtype(
     case = reference["projection"]
     model = object.__new__(NativeModel)
     model.precision = precision
-    model.accumulate_float32 = precision == "bfloat16"
-    model.bfloat16_operands = False
-    model.dtype = mx.float32 if precision == "float32" else mx.bfloat16
+    model.accumulate_float32 = precision == "bfloat16_matmul"
+    model.dtype = mx.bfloat16
     name = (
         "model.vision3d.projection"
         if tower == "vision3d"
@@ -278,14 +277,15 @@ def test_native_projection_respects_profile_operands_and_output_dtype(
         mx.array(case["input"], dtype=mx.bfloat16 if original else mx.float32), name
     )
     assert result.dtype == (mx.bfloat16 if original else mx.float32)
-    rounded = original or (tower == "vision3d" and precision == "bfloat16")
-    expected = np.array(
-        case["bfloat16" if original else "rounded_operands" if rounded else "float32"]
-    )
-    scale = np.array(case["rounded_error_scale" if rounded else "error_scale"])
-    # The absolute-product sum bounds a 32-term dot plus its bias; source BF16
-    # additionally rounds the output once. No hardware dispatch or bitwise oracle.
-    bound = _gamma(34) * scale + (np.abs(expected) * 2**-7 if original else 0)
+    # Both profiles round the operands to BF16. Source BF16 is compared with its
+    # BF16 output; bfloat16_matmul rounds the product to BF16 before an FP32 bias.
+    expected = np.array(case["bfloat16" if original else "rounded_operands"])
+    scale = np.array(case["rounded_error_scale"])
+    # The absolute-product sum bounds a 32-term dot plus its bias, plus one BF16
+    # rounding of the biased output (source) or of the product before the bias
+    # (bfloat16_matmul). No hardware dispatch or bitwise oracle.
+    rounded = expected if original else expected - np.array(case["bias"])
+    bound = _gamma(34) * scale + np.abs(rounded) * 2**-7
     np.testing.assert_array_less(
         np.abs(cast(FloatArray, np.array(result.astype(mx.float32))) - expected), bound
     )

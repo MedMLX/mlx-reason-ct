@@ -15,6 +15,7 @@ from mlx_reason_ct.errors import InvalidInputError
     [
         {"image_path": "ct.png"},
         {"precision": "float16"},
+        {"precision": "float32"},
         {"max_new_tokens": 0},
         {"enable_thinking": "false"},
         {"output_dir": "existing"},
@@ -28,6 +29,7 @@ from mlx_reason_ct.errors import InvalidInputError
     ids=[
         "suffix",
         "choice",
+        "removed-float32",
         "range",
         "boolean",
         "existing-output",

@@ -23,7 +23,7 @@ Generate reports and ask questions about 3D chest and abdomen CT, locally on App
 
 | Model | Weights download | Peak MLX memory | Measured on |
 | :--- | ---: | ---: | :--- |
-| `mlx-reason-ct` | 17.4 GB | About 14.4 GB | A `float32` chest or abdomen report |
+| `mlx-reason-ct` | 17.4 GB | About 12.5 GB | A chest or abdomen report |
 
 ## Install
 
@@ -49,10 +49,10 @@ first use; with MedMLX installed, `medmlx setup mlx-reason-ct` downloads it ahea
 For local weights, pass a folder with the converted runtime files and the `mlx/` shard
 layout as `weights_path`.
 
-- The FP32 weights occupy 17.4 GB on disk; the decoder weights are held in memory as
+- The bundle stores the weights as FP32 (17.4 GB on disk); they are held in memory as
   their exact BF16 values.
-- Peak MLX memory for a `float32` chest or abdomen report is about 14.4 GB; allow more
-  for preprocessing, macOS and other applications.
+- Peak MLX memory for a chest or abdomen report is about 12.5 GB; allow more for
+  preprocessing, macOS and other applications.
 - Crop whole-body scans to the chest or abdomen before running.
 
 ### Command line
@@ -112,15 +112,11 @@ files with `status: failed` and raises; raise `max_new_tokens` and retry.
 
 | `precision` | Weights and arithmetic |
 | --- | --- |
-| `float32` (default) | FP32 arithmetic, activations and caches; decoder weights held as their exact BF16 values |
-| `bfloat16` | Source BF16 weights, casts and cache boundaries |
-| `bfloat16_fp32` | BF16 weights with FP32 accumulation and decoding |
-| `bfloat16_fast` | BF16 projection operands with FP32 accumulation for the CT and prompt; FP32 arithmetic for generated tokens, the LM head, norms, recurrence, attention and caches |
+| `bfloat16_fast` (default) | BF16 matmuls with FP32 accumulation for the CT and prompt; FP32 arithmetic for generated tokens, the LM head, norms, recurrence, attention and caches |
+| `bfloat16` | NVIDIA's BF16 casts and cache boundaries, reproduced step by step; much slower |
 
-`bfloat16_fast` uses BF16 operands for image encoding and prompt processing.
-Rounding can change token choices and produce different text from `float32`.
-
-The published bundle expands NVIDIA's BF16 weights to FP32 without retraining.
+Both profiles use NVIDIA's BF16 weights unchanged. The published bundle stores them as
+FP32 without retraining.
 Decoding is greedy. Inference requires Apple Silicon with Metal.
 
 ### Python API

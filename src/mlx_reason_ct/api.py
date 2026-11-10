@@ -29,10 +29,8 @@ from mlx_reason_ct.response import ReportFiles, save_response, write_private_tex
 from mlx_reason_ct.runtime import host_info, import_mlx
 
 PRECISION_PROFILES: dict[str, str] = {
-    "float32": "float32",
-    "bfloat16": "source_bfloat16",
-    "bfloat16_fp32": "bfloat16",
     "bfloat16_fast": "bfloat16_matmul",
+    "bfloat16": "source_bfloat16",
 }
 
 
@@ -82,7 +80,7 @@ def validate_generation_options(
     if not isinstance(cast(object, precision), str) or precision not in PRECISION_PROFILES:
         raise InvalidInputError(
             "Unsupported NV-Reason-CT MLX precision profile; "
-            "choose float32, bfloat16, bfloat16_fp32 or bfloat16_fast."
+            "choose bfloat16_fast or bfloat16."
         )
     if anatomy_region is not None and (
         not isinstance(cast(object, anatomy_region), str)
@@ -297,7 +295,7 @@ def generate_report(
     anatomy_region: str | None = "chest",
     enable_thinking: bool = False,
     max_new_tokens: int = 512,
-    precision: str = "float32",
+    precision: str = "bfloat16_fast",
     overwrite: bool = False,
     history: Sequence[tuple[str, str]] | None = None,
     tools: Sequence[Mapping[str, JsonValue]] | None = None,
@@ -431,9 +429,9 @@ def _finish_report(
             "peak_mlx_memory_bytes": int(mx.get_peak_memory()),
             "precision": precision,
             "learned_weight_dtype": str(model.dtype),
-            "decoder_arithmetic": {"bfloat16": "bfloat16", "bfloat16_fast": "bfloat16_matmul"}.get(
-                precision, "float32"
-            ),
+            "decoder_arithmetic": {"bfloat16": "bfloat16", "bfloat16_fast": "bfloat16_matmul"}[
+                precision
+            ],
             "native_arithmetic_profile": native_profile,
             "synchronization": "prefill eval per layer; decode async_eval per token",
             "anatomy_region": anatomy_region,
@@ -507,7 +505,7 @@ class CTSession:
         *,
         model_dir: str | Path,
         anatomy_region: str | None = "chest",
-        precision: str = "float32",
+        precision: str = "bfloat16_fast",
         cache_chunk_size: int = 256,
         reuse_prefix: bool = False,
     ) -> None:

@@ -1,13 +1,12 @@
 """Native Metal Primus, multimodal projection and Qwen3.5 hybrid decoding.
 
-All learned arithmetic runs on Metal. The source_bfloat16 profile preserves
-NVIDIA's BF16 cast/cache boundaries; bfloat16 stores BF16 weights with FP32
-accumulation and decoding; bfloat16_matmul additionally runs multi-token
-projections as native BF16 matmuls. Every non-source profile stores the 2-D
-language-model weights as their exact BF16 values; single-token steps and the LM
-head read them through ``bf16_gemv`` in FP32 arithmetic. Public bfloat16 selects
-source_bfloat16, public bfloat16_fp32 selects bfloat16 and public bfloat16_fast
-selects bfloat16_matmul.
+All learned arithmetic runs on Metal, and every learned weight is held as its
+exact BF16 value. The source_bfloat16 profile (public bfloat16) preserves
+NVIDIA's BF16 cast/cache boundaries. The bfloat16_matmul profile (public
+bfloat16_fast) runs multi-token projections as native BF16 matmuls with FP32
+accumulation; its activations, norms, recurrence, attention and caches are FP32,
+and single-token steps and the LM head read the BF16 weights through
+``bf16_gemv`` in FP32 arithmetic.
 Source layouts remain visible in the converted cache.
 """
 
@@ -54,7 +53,7 @@ class DecoderCache:
     axis is allocated capacity; only ``:offset`` is valid. Attention never sees
     the unused tail. Capacity grows by chunk multiples, without evicting tokens.
     The recurrent state is stored in BF16 for ``source_bfloat16`` and FP32 for
-    the other native precision profiles; recurrence arithmetic starts in FP32.
+    ``bfloat16_matmul``; recurrence arithmetic starts in FP32.
     """
 
     layers: list[dict[str, Array]] = field(default_factory=lambda: [{} for _ in range(32)])
@@ -87,51 +86,43 @@ class DecoderCache:
 class NativeModel:
     """Pinned 3D network with bounded attention and feed-forward workspaces.
 
-    ``precision`` is a native profile name (``float32``, ``bfloat16``,
-    ``bfloat16_matmul`` or ``source_bfloat16``), not the public API name; see the
-    module docstring. Weights are loaded from the converted FP32 shards and cast to
-    the profile dtype, except that non-source profiles keep 2-D language-model
-    weights as BF16, which holds the source values exactly.
+    ``precision`` is a native profile name (``bfloat16_matmul`` or
+    ``source_bfloat16``), not the public API name; see the module docstring.
+    Weights are loaded from the converted FP32 shards and stored as BF16, which
+    holds the source values exactly.
     """
 
     def __init__(
-        self, model_dir: Path, *, precision: str = "float32",
+        self, model_dir: Path, *, precision: str = "bfloat16_matmul",
         ffn_output_policy: Literal["bounded", "concatenate"] = "bounded",
     ) -> None:
-        """Load the generation config and FP32 shards, then cast weights to the profile dtype.
+        """Load the generation config and FP32 shards, then store the weights as BF16.
 
         Rejects unknown native profile names and cache tensors that are not FP32.
         ``bounded`` fills one FFN residual destination; ``concatenate`` retains
         all chunk outputs until concatenation for throughput comparisons.
         """
-        if precision not in {"float32", "bfloat16", "bfloat16_matmul", "source_bfloat16"}:
+        if precision not in {"bfloat16_matmul", "source_bfloat16"}:
             raise InvalidInputError("Unsupported NV-Reason-CT precision profile")
         if ffn_output_policy not in {"bounded", "concatenate"}:
             raise InvalidInputError("ffn_output_policy must be bounded or concatenate")
         self.ffn_output_policy = ffn_output_policy
-        self.dtype: Dtype = mx.float32 if precision == "float32" else mx.bfloat16
+        self.dtype: Dtype = mx.bfloat16
         self.precision: str = precision
         self._vision_available = True
-        # bfloat16_matmul shares bfloat16's FP32 activations, norms, recurrence and
-        # caches, but feeds learned projections to native BF16 matmuls.
-        self.accumulate_float32: bool = precision in {"bfloat16", "bfloat16_matmul"}
-        self.bfloat16_operands: bool = precision == "bfloat16_matmul"
+        # bfloat16_matmul keeps activations, norms, recurrence and caches in FP32
+        # and feeds learned projections to native BF16 matmuls.
+        self.accumulate_float32: bool = precision == "bfloat16_matmul"
         self.weights: dict[str, Array] = {}
         for shard in SHARDS:
             loaded = cast("dict[str, Array]", mx.load(str(model_dir / "mlx" / shard)))
             for name, value in loaded.items():
                 if value.dtype != mx.float32:
                     raise InvalidInputError(f"Native cache must store FP32 tensors: {name}")
-                # Every learned weight is a widened BF16 value, so the non-source
-                # profiles store 2-D language-model weights as BF16 losslessly;
-                # FP32 arithmetic widens them again (see bf16_gemv).
-                compact = (
-                    self.precision != "source_bfloat16"
-                    and name.startswith("model.language_model.")
-                    and value.ndim == 2
-                )
-                loaded[name] = value.astype(mx.bfloat16 if compact else self.dtype)
-            # Materialize per shard so BF16 profiles never hold every FP32 tensor at once.
+                # Every learned weight is a widened BF16 value, so BF16 storage is
+                # lossless; FP32 arithmetic widens it again (see bf16_gemv).
+                loaded[name] = value.astype(mx.bfloat16)
+            # Materialize per shard so the FP32 tensors are never all held at once.
             mx.eval(*loaded.values())
             self.weights.update(loaded)
         self.delta = gated_delta
@@ -243,10 +234,6 @@ class NativeModel:
         process ``x`` in row chunks pass it so the source-BF16 projection partitioning,
         which depends on the full row count, is chosen as in the unchunked source run.
         """
-        # BF16 vision operands accumulate into FP32 without an output downcast.
-        # Decoder inputs stay FP32 to preserve cached/uncached consistency.
-        if self.accumulate_float32 and name.startswith("model.vision3d."):
-            x = x.astype(mx.bfloat16).astype(mx.float32)
         weight = self.weights[name + ".weight"]
         bias = self.weights.get(name + ".bias")
         rows = x.shape[-2] if source_length is None else source_length
@@ -307,17 +294,12 @@ class NativeModel:
             # One FP32 row against BF16-stored weights: the bandwidth-bound decode
             # step, bit-identical to the FP32 matmul on widened weights.
             return mx.reshape(gemv(mx.reshape(x, (-1,)), weight), (*x.shape[:-1], -1))
-        if self.bfloat16_operands:
-            # BF16 operands with MLX's FP32 accumulation; the product is rounded to
-            # BF16 once, as the source GPU's BF16 linear layers do, then widened.
-            product = (x.astype(mx.bfloat16) @ weight.T).astype(mx.float32)
-            return product if bias is None else product + bias.astype(mx.float32)
-        if self.accumulate_float32 or weight.dtype != x.dtype:
-            # Widening BF16-stored weights is exact; FP32 prefill keeps MLX's FP32 matmul.
-            weight = weight.astype(mx.float32)
-            if bias is not None:
-                bias = bias.astype(mx.float32)
-        return x @ weight.T if bias is None else mx.addmm(bias, x, weight.T)
+        if not self.accumulate_float32:
+            raise InvalidInputError(f"No source-BF16 projection is defined for {name}")
+        # BF16 operands with MLX's FP32 accumulation; the product is rounded to
+        # BF16 once, as the source GPU's BF16 linear layers do, then widened.
+        product = (x.astype(mx.bfloat16) @ weight.T).astype(mx.float32)
+        return product if bias is None else product + bias.astype(mx.float32)
 
     def norm(self, x: Array, name: str, eps: float = 1e-5) -> Array:
         """Apply the named LayerNorm in FP32 opmath, then cast to the working dtype.
@@ -675,10 +657,8 @@ class NativeModel:
                 )
             x = x + h
             h = self.rms(x, p + ".post_attention_layernorm")
-            # Feed-forward rows are evaluated in chunks to bound peak workspace memory.
-            # With MLX 0.32.4 on Metal, FP32 matmul rows were bit-identical at 256 and
-            # 2048 rows per chunk but not at 4096 or more, which selects other kernels.
-            # The FP32-arithmetic profiles use 2048; source BF16 keeps its 256 rows.
+            # Feed-forward rows are evaluated in chunks to bound peak workspace memory:
+            # 2048 rows for bfloat16_matmul, 256 for source BF16.
             rows = 256 if self.precision == "source_bfloat16" else 2048
             source_length = h.shape[1]
 
