@@ -10,7 +10,7 @@ the published bundle stores them as FP32 only because it was converted that way.
 | `bfloat16_fast` (default) | BF16 matmuls with FP32 accumulation, product rounded to BF16 | FP32 arithmetic on BF16 weights (`bf16_gemv`); FP32 norms, recurrence, attention and caches |
 | `bfloat16` | NVIDIA's BF16 casts and cache boundaries, reproduced by custom Metal kernels | Same source BF16 boundaries |
 
-Version 0.5.0 removed the `float32` and `bfloat16_fp32` profiles. They read the
+Version 0.6.0 removed the `float32` and `bfloat16_fp32` profiles. They read the
 same BF16 weights; FP32 matmuls on the CT and prompt took about twice as long
 and produced the same report on the measured CT.
 
