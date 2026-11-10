@@ -33,6 +33,13 @@ from mlx_reason_ct.response import (
 )
 from mlx_reason_ct.runtime import host_info, import_mlx
 
+#: Report requests without a prompt: the upstream model card's wording by region.
+DEFAULT_PROMPTS = {
+    "chest": "Write a structured chest CT report.",
+    "abdomen": "Write a structured abdominal CT report.",
+    None: "Write a structured CT report.",
+}
+
 PRECISION_PROFILES: dict[str, str] = {
     "bfloat16_fast": "bfloat16_matmul",
     "bfloat16": "source_bfloat16",
@@ -92,11 +99,7 @@ def validate_generation_options(
     ):
         raise InvalidInputError("anatomy_region must be chest, abdomen, or None")
     if prompt is None:
-        prompt = (
-            f"write a structured {anatomy_region} CT report"
-            if anatomy_region is not None
-            else "write a structured CT report"
-        )
+        prompt = DEFAULT_PROMPTS[anatomy_region]
     # Annotations do not bind callers, so validate the runtime values.
     token_limit = cast(object, max_new_tokens)
     if (
