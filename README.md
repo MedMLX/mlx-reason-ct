@@ -13,6 +13,10 @@ Generate reports and ask questions about 3D chest and abdomen CT, locally on App
 
 [Model weights](https://huggingface.co/MedMLX/MLX-Reason-CT) · [MedMLX](https://github.com/MedMLX/medmlx)
 
+<img src="https://raw.githubusercontent.com/MedMLX/mlx-reason-ct/main/docs/example.png" alt="Axial and coronal chest CT beside the report MLX-Reason-CT generated for it" width="100%">
+
+<sub>Report generated for a [LUNA16](https://zenodo.org/records/3723295) chest CT, CC BY 4.0.</sub>
+
 </div>
 
 | Input | Output |
