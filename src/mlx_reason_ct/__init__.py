@@ -3,7 +3,7 @@
 from importlib import import_module
 from typing import TYPE_CHECKING
 
-__version__ = "0.4.1"
+__version__ = "0.5.0"
 
 if TYPE_CHECKING:
     from mlx_reason_ct.api import CTSession, generate_report

@@ -6,7 +6,7 @@ Generate reports and ask questions about 3D chest and abdomen CT, locally on App
 
 [![PyPI](https://img.shields.io/pypi/v/mlx-reason-ct)](https://pypi.org/project/mlx-reason-ct/)
 [![Python](https://img.shields.io/pypi/pyversions/mlx-reason-ct)](https://pypi.org/project/mlx-reason-ct/)
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue)](https://github.com/MedMLX/mlx-reason-ct/blob/v0.4.1/LICENSE)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue)](https://github.com/MedMLX/mlx-reason-ct/blob/v0.5.0/LICENSE)
 [![Apple Silicon](https://img.shields.io/badge/Apple_Silicon-MLX-black?logo=apple)](https://github.com/ml-explore/mlx)
 [![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97_Hugging_Face-weights-yellow)](https://huggingface.co/MedMLX/MLX-Reason-CT)
 [![MedMLX](https://img.shields.io/badge/MedMLX-runtime-A51C30)](https://github.com/MedMLX/medmlx)
@@ -30,7 +30,7 @@ Generate reports and ask questions about 3D chest and abdomen CT, locally on App
 ```bash
 uv venv --python 3.13
 source .venv/bin/activate
-uv pip install "mlx-reason-ct>=0.4.1"
+uv pip install "mlx-reason-ct>=0.5.0"
 ```
 
 ## Run
@@ -170,4 +170,4 @@ For Codex, use `codex mcp add medmlx -- "$MEDMLX" serve --root "$HOME/medmlx-wor
 
 ## License
 
-Port contributions: [Apache-2.0](https://github.com/MedMLX/mlx-reason-ct/blob/v0.4.1/LICENSE). NVIDIA model materials and weights: OpenMDW-1.1. See [third-party notices](https://github.com/MedMLX/mlx-reason-ct/blob/v0.4.1/THIRD_PARTY_NOTICES.md).
+Port contributions: [Apache-2.0](https://github.com/MedMLX/mlx-reason-ct/blob/v0.5.0/LICENSE). NVIDIA model materials and weights: OpenMDW-1.1. See [third-party notices](https://github.com/MedMLX/mlx-reason-ct/blob/v0.5.0/THIRD_PARTY_NOTICES.md).
