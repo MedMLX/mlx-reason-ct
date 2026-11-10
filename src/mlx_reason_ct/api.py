@@ -25,7 +25,12 @@ from mlx_reason_ct.errors import AssetNotReadyError, InvalidInputError, ModelExe
 from mlx_reason_ct.generation_state import PromptPrefix, cache_capacity
 from mlx_reason_ct.mlx_weights import ENGINE, REVISION, require_runtime_assets
 from mlx_reason_ct.processor_mlx import Processor, VolumePrompt, validate_tool_context
-from mlx_reason_ct.response import ReportFiles, save_response, write_private_text
+from mlx_reason_ct.response import (
+    ReportFiles,
+    restore_outputs_on_failure,
+    save_response,
+    write_private_text,
+)
 from mlx_reason_ct.runtime import host_info, import_mlx
 
 PRECISION_PROFILES: dict[str, str] = {
@@ -79,8 +84,7 @@ def validate_generation_options(
     """
     if not isinstance(cast(object, precision), str) or precision not in PRECISION_PROFILES:
         raise InvalidInputError(
-            "Unsupported NV-Reason-CT MLX precision profile; "
-            "choose bfloat16_fast or bfloat16."
+            "Unsupported NV-Reason-CT MLX precision profile; choose bfloat16_fast or bfloat16."
         )
     if anatomy_region is not None and (
         not isinstance(cast(object, anatomy_region), str)
@@ -339,8 +343,16 @@ def generate_report(
             response (partial files and a ``status: failed`` run record are kept).
     """
     prompt, resolved_history = validate_generation_options(
-        prompt, anatomy_region, enable_thinking, max_new_tokens, overwrite, precision, history,
-        tools=tools, tool_history=tool_history, response_choices=response_choices,
+        prompt,
+        anatomy_region,
+        enable_thinking,
+        max_new_tokens,
+        overwrite,
+        precision,
+        history,
+        tools=tools,
+        tool_history=tool_history,
+        response_choices=response_choices,
     )
     model_dir = Path(model_dir).expanduser()
     output_dir = Path(output_dir).expanduser().resolve()
@@ -456,21 +468,29 @@ def _finish_report(
         "requires_human_review": True,
         "clinical_validation": False,
     }
-    # Completion failure is recorded after retaining report and response files.
-    try:
-        save_response(
-            output_dir, processor.decode(tokens), metrics,
-            overwrite=overwrite, literal=literal_response,
-        )
-    except ModelExecutionError as error:
-        result.update(status="failed", error=str(error))
-        write_private_text(
-            Path(files.outputs()["run"]), json.dumps(result, indent=2) + "\n", overwrite=overwrite
-        )
-        raise
-    write_private_text(
-        Path(files.outputs()["run"]), json.dumps(result, indent=2) + "\n", overwrite=overwrite
-    )
+    outputs = files.outputs()
+    report_path = Path(outputs["report"])
+    response_path = Path(outputs["response"])
+    run_path = Path(outputs["run"])
+    incomplete: ModelExecutionError | None = None
+    with restore_outputs_on_failure((report_path, response_path, run_path)) as published:
+        try:
+            save_response(
+                output_dir,
+                processor.decode(tokens),
+                metrics,
+                overwrite=overwrite,
+                literal=literal_response,
+            )
+        except ModelExecutionError as error:
+            # An incomplete generation intentionally retains all three failed-run files.
+            result.update(status="failed", error=str(error))
+            incomplete = error
+        published.extend((report_path, response_path))
+        write_private_text(run_path, json.dumps(result, indent=2) + "\n", overwrite=overwrite)
+        published.append(run_path)
+    if incomplete is not None:
+        raise incomplete
     return result
 
 
