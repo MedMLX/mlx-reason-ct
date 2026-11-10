@@ -48,13 +48,20 @@ def read_manifest(model_dir: Path) -> BundleManifest:
     read.
 
     Raises:
-        InvalidInputError: a runtime file or shard is missing, or the manifest
-            provenance or shard inventory differs from the pinned conversion.
+        InvalidInputError: a runtime file, the manifest or a shard is missing,
+            the manifest is not valid JSON, or its provenance or shard inventory
+            differs from the pinned conversion.
     """
     for name in RUNTIME_FILES:
         if not (model_dir / name).is_file():
             raise InvalidInputError(f"NV-Reason-CT runtime asset missing: {name}")
-    payload: object = json.loads((model_dir / MANIFEST).read_text())
+    manifest_path = model_dir / MANIFEST
+    if not manifest_path.is_file():
+        raise InvalidInputError(f"MLX-Reason-CT cache manifest missing: {MANIFEST}")
+    try:
+        payload: object = json.loads(manifest_path.read_text())
+    except json.JSONDecodeError as error:
+        raise InvalidInputError(f"MLX-Reason-CT cache manifest is not JSON: {error}") from error
     if not isinstance(payload, dict):
         raise InvalidInputError("MLX-Reason-CT cache manifest must be an object")
     manifest = cast(BundleManifest, payload)

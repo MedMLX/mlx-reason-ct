@@ -27,6 +27,7 @@ _EXPORTS = {
 
 
 def __getattr__(name: str) -> object:
+    """Import a public name on first access and cache it in the package."""
     module = _EXPORTS.get(name)
     if module is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
@@ -36,4 +37,5 @@ def __getattr__(name: str) -> object:
 
 
 def __dir__() -> list[str]:
+    """List loaded and lazily exported names."""
     return sorted({*globals(), *_EXPORTS})

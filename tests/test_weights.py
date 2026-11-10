@@ -57,13 +57,19 @@ def make_bundle(directory: Path) -> Path:
     return directory
 
 
-@pytest.mark.parametrize("corruption", ["shard", "inventory", "revision"])
+@pytest.mark.parametrize(
+    "corruption", ["shard", "inventory", "revision", "missing-manifest", "manifest-json"]
+)
 def test_bundle_rejects_corruption(tmp_path: Path, corruption: str) -> None:
     bundle = make_bundle(tmp_path / "bundle")
     manifest_path = bundle / "mlx/manifest.json"
     weights.read_manifest(bundle)  # The positive control reaches the same admission owner.
     if corruption == "shard":
         (bundle / "mlx/vision.safetensors").unlink()
+    elif corruption == "missing-manifest":
+        manifest_path.unlink()
+    elif corruption == "manifest-json":
+        manifest_path.write_text("{")
     else:
         manifest = json.loads(manifest_path.read_text())
         if corruption == "inventory":
