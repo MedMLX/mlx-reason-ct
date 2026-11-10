@@ -480,3 +480,41 @@ def test_native_attention_k8_preserves_reference_carries() -> None:
     # Analytic anchors distinguish truncated carries from ordinary RNE sums,
     # cancellation at the lower fast-window edge, and overflow at the upper edge.
     np.testing.assert_array_equal(outputs[1][:3], [1 + 2**-23, 2**-124, np.inf])
+
+
+def test_release_visual_stage_preserves_decoder_and_rejects_reencoding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Release native visual owners while keeping the same live decoder tensor."""
+    import gc
+    import weakref
+
+    from mlx_reason_ct.errors import InvalidInputError
+    from mlx_reason_ct.mlx_model import NativeModel, mx
+    from mlx_reason_ct.mlx_weights import SHARDS
+
+    decoder = mx.zeros((8, 8)) + 1
+
+    def read_weights(path: str) -> dict[str, Array]:
+        # Replace only checkpoint I/O; the constructor and release boundary are real.
+        if Path(path).name != SHARDS[0]:
+            return {}
+        return {
+            "model.vision3d.projection.weight": mx.zeros((8, 8)),
+            "model.language_model.norm.weight": decoder,
+        }
+
+    monkeypatch.setattr(import_mlx(), "load", read_weights)
+    (tmp_path / "generation_config.json").write_text('{"eos_token_id": [1]}')
+    model = NativeModel(tmp_path)
+    admitted_decoder = model.weights["model.language_model.norm.weight"]
+    visual = [weakref.ref(model.weights["model.vision3d.projection.weight"]),
+              weakref.ref(model.vision_sin), weakref.ref(model.vision_cos)]
+    model.release_vision()
+    gc.collect()
+    assert all(value() is None for value in visual)
+    assert len(model.weights) == 1
+    assert model.weights["model.language_model.norm.weight"] is admitted_decoder
+    with pytest.raises(InvalidInputError, match="released"):
+        model.vision(mx.zeros((1, 1, 1)))
+    model.release_vision()

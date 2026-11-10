@@ -359,6 +359,7 @@ def generate_report(
         raise ModelExecutionError("NV-Reason-CT produced nonfinite image embeddings")
     # Only the projected embeddings are needed for decoding.
     del features
+    model.release_vision()
     tokens, metrics = generate(
         model,
         inputs,
@@ -528,6 +529,7 @@ class CTSession:
             if not bool(mx.all(mx.isfinite(embeddings)).item()):
                 raise ModelExecutionError("NV-Reason-CT produced nonfinite image embeddings")
             del features
+            model.release_vision()
             after = self._source.stat()
             if stamp != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
                 raise InvalidInputError("CT file changed during encoding; create a new CTSession")

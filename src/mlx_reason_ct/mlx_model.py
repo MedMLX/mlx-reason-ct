@@ -15,10 +15,11 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from importlib import import_module
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 if TYPE_CHECKING:
     from mlx_reason_ct import gated_delta, source_arithmetic
@@ -93,15 +94,24 @@ class NativeModel:
     weights as BF16, which holds the source values exactly.
     """
 
-    def __init__(self, model_dir: Path, *, precision: str = "float32") -> None:
+    def __init__(
+        self, model_dir: Path, *, precision: str = "float32",
+        ffn_output_policy: Literal["bounded", "concatenate"] = "bounded",
+    ) -> None:
         """Load the generation config and FP32 shards, then cast weights to the profile dtype.
 
         Rejects unknown native profile names and cache tensors that are not FP32.
+        ``bounded`` fills one FFN residual destination; ``concatenate`` retains
+        all chunk outputs until concatenation for throughput comparisons.
         """
         if precision not in {"float32", "bfloat16", "bfloat16_matmul", "source_bfloat16"}:
             raise InvalidInputError("Unsupported NV-Reason-CT precision profile")
+        if ffn_output_policy not in {"bounded", "concatenate"}:
+            raise InvalidInputError("ffn_output_policy must be bounded or concatenate")
+        self.ffn_output_policy = ffn_output_policy
         self.dtype: Dtype = mx.float32 if precision == "float32" else mx.bfloat16
         self.precision: str = precision
+        self._vision_available = True
         # bfloat16_matmul shares bfloat16's FP32 activations, norms, recurrence and
         # caches, but feeds learned projections to native BF16 matmuls.
         self.accumulate_float32: bool = precision in {"bfloat16", "bfloat16_matmul"}
@@ -142,6 +152,67 @@ class NativeModel:
         self.text_inv_freq: Array = mx.array(
             1 / np.power(np.float32(10000000), np.arange(0, 64, 2, dtype=np.float32) / 64)
         )
+
+    def release_vision(self) -> None:
+        """Release this model's visual weights/constants after its embeddings are evaluated.
+
+        The decoder remains reusable. Further image encoding is rejected; callers
+        that need arbitrary images can keep the default, fully resident model.
+        Shared source-arithmetic lookup tables remain owned by their bounded cache.
+        """
+        if not self._vision_available:
+            return
+        for name in list(self.weights):
+            if name.startswith("model.vision3d."):
+                del self.weights[name]
+        del self.vision_sin, self.vision_cos
+        self._vision_available = False
+
+    def _ffn_residual(
+        self, x: Array, h: Array, rows: int, project: Callable[[Array], Array], *,
+        scale: Array | None = None, evaluate: bool = True,
+    ) -> Array:
+        """Fill a residual destination without retaining a full collection of FFN outputs.
+
+        Row sizes and projection arithmetic belong to the caller. ``concatenate``
+        retains the historical storage schedule for throughput comparisons; the
+        bounded policy evaluates each destination update before advancing.
+        """
+        if scale is not None and self.accumulate_float32:
+            scale = scale.astype(mx.float32)
+
+        def add(part: Array, residual: Array) -> Array:
+            if scale is None:
+                return residual + part
+            if self.accumulate_float32:
+                part = part.astype(mx.float32)
+            return residual + scale * part
+
+        if h.shape[1] <= rows:
+            part = project(h)
+            if evaluate:
+                mx.eval(part)
+            return add(part, x)
+        if self.ffn_output_policy == "concatenate":
+            parts: list[Array] = []
+            for start in range(0, h.shape[1], rows):
+                part = project(h[:, start : start + rows])
+                mx.eval(part)
+                parts.append(part)
+            return add(mx.concatenate(parts, axis=1), x)
+        result: Array | None = None
+        for start in range(0, h.shape[1], rows):
+            stop = min(start + rows, h.shape[1])
+            part = project(h[:, start:stop])
+            # Submit the projection boundary without a second blocking wait.
+            mx.async_eval(part)
+            value = add(part, x[:, start:stop])
+            if result is None:
+                result = mx.zeros(x.shape, dtype=value.dtype)
+            result[:, start:stop] = value
+            mx.eval(result)
+        assert result is not None
+        return result
 
     @staticmethod
     def silu(x: Array) -> Array:
@@ -324,8 +395,10 @@ class NativeModel:
             ``(Z, Y, X)`` row-major order, one per 8 x 8 x 8 patch.
 
         Raises:
-            InvalidInputError: ``pixels`` has any other shape.
+            InvalidInputError: Visual weights were released, or ``pixels`` has another shape.
         """
+        if not self._vision_available:
+            raise InvalidInputError("Visual weights were released; load a new model to encode a CT")
         if pixels.shape != (1, 1, 192, 192, 192):
             raise InvalidInputError("NV-Reason-CT vision expects a single 192-cubed CZYX CT")
         prefix = "model.vision3d.sub_vision"
@@ -371,20 +444,13 @@ class NativeModel:
             x = x + scale * h
             h = self.norm(x, p + ".norm2")
             # Feed-forward rows are evaluated in 512-row chunks to bound workspace memory.
-            chunks: list[Array] = []
-            for start in range(0, h.shape[1], 512):
-                part = h[:, start : start + 512]
+            def vision_ffn(part: Array) -> Array:
                 part = self.silu(self.linear(part, p + ".mlp.fc1_g")) * self.linear(
                     part, p + ".mlp.fc1_x"
                 )
-                part = self.linear(self.norm(part, p + ".mlp.norm"), p + ".mlp.fc2")
-                mx.eval(part)
-                chunks.append(part)
-            h = mx.concatenate(chunks, axis=1)
-            scale = self.weights[p + ".gamma_2"]
-            if self.accumulate_float32:
-                scale, h = scale.astype(mx.float32), h.astype(mx.float32)
-            x = x + scale * h
+                return self.linear(self.norm(part, p + ".mlp.norm"), p + ".mlp.fc2")
+
+            x = self._ffn_residual(x, h, 512, vision_ffn, scale=self.weights[p + ".gamma_2"])
             mx.eval(x)
         features = self.norm(x, prefix + ".eva.norm")
         p = "model.vision3d.merger"
@@ -610,29 +676,27 @@ class NativeModel:
             x = x + h
             h = self.rms(x, p + ".post_attention_layernorm")
             # Feed-forward rows are evaluated in chunks to bound peak workspace memory.
-            chunks: list[Array] = []
             # With MLX 0.32.4 on Metal, FP32 matmul rows were bit-identical at 256 and
             # 2048 rows per chunk but not at 4096 or more, which selects other kernels.
             # The FP32-arithmetic profiles use 2048; source BF16 keeps its 256 rows.
             rows = 256 if self.precision == "source_bfloat16" else 2048
-            for start in range(0, h.shape[1], rows):
-                part = h[:, start : start + rows]
-                part = self.linear(
+            source_length = h.shape[1]
+
+            def language_ffn(part: Array) -> Array:
+                return self.linear(
                     self.silu(
                         self.linear(
                             part,
                             p + ".mlp.gate_proj",
-                            source_length=h.shape[1],
+                            source_length=source_length,
                         )
                     )
-                    * self.linear(part, p + ".mlp.up_proj", source_length=h.shape[1]),
+                    * self.linear(part, p + ".mlp.up_proj", source_length=source_length),
                     p + ".mlp.down_proj",
-                    source_length=h.shape[1],
+                    source_length=source_length,
                 )
-                if not step:
-                    mx.eval(part)
-                chunks.append(part)
-            x = x + (chunks[0] if len(chunks) == 1 else mx.concatenate(chunks, axis=1))
+
+            x = self._ffn_residual(x, h, rows, language_ffn, evaluate=not step)
             if not step:
                 mx.eval(x, *cache.layers[i].values())
         cache.offset += embeddings.shape[1]
