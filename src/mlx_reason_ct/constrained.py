@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -28,6 +29,13 @@ def validate_response_choices(choices: Sequence[str]) -> tuple[str, ...]:
     if any(not isinstance(c, str) or not c or len(c) > 4096 for c in values):
         raise InvalidInputError("Each response choice must be text of length 1 to 4096")
     return tuple(dict.fromkeys(cast(Sequence[str], values)))
+
+
+def special_token_ids(tokenizer_path: Path) -> frozenset[int]:
+    """IDs that ``tokenizer.json`` marks special, which decoding with skip_special_tokens drops."""
+    document = cast(dict[str, object], json.loads(tokenizer_path.read_text()))
+    added = cast(list[dict[str, object]], document.get("added_tokens", []))
+    return frozenset(cast(int, token["id"]) for token in added if token.get("special") is True)
 
 
 class ChoiceConstraint:
@@ -66,15 +74,17 @@ class ChoiceConstraint:
                 n_vocab=logits.shape[-1],
                 eos_token=list(eos_ids),
             )
+            special = special_token_ids(self._path)
             alternatives: list[str] = []
             for choice in self.choices:
                 ids = tokenizer.tokenize_str(choice, parse_special=True)
                 if any(token in eos_ids for token in ids):
                     raise InvalidInputError("Response choices cannot contain an EOS token")
                 # Tokenizer normalization or missing vocabulary entries must not
-                # change the requested string. Match report decoding, which
-                # removes special tokens rather than displaying their names.
-                visible = [token for token in ids if not tokenizer.is_special_token(token)]
+                # change the requested string. Match report decoding, which removes
+                # the tokens tokenizer.json marks special. LLGuidance's own flag also
+                # covers Qwen's tool tags, which decoding keeps, so it is not used.
+                visible = [token for token in ids if token not in special]
                 if not ids or tokenizer.decode_str(visible) != choice:
                     raise InvalidInputError(
                         "Response choices must round-trip through the tokenizer"

@@ -81,3 +81,45 @@ def test_choice_cannot_disappear_when_report_decoding_skips_special_tokens(
     constraint = ChoiceConstraint(tokenizer_path, ["x"])
     with pytest.raises(InvalidInputError):
         constraint.sample(mx.array([0, 0, 5, 0], dtype=mx.float32), (3,))
+
+
+def test_added_token_that_decoding_keeps_is_a_valid_choice(tmp_path: Path) -> None:
+    """Qwen's tool tags are added but not special tokens, so report decoding keeps them."""
+    path = tmp_path / "tokenizer.json"
+    document: dict[str, object] = {
+        "version": "1.0",
+        "added_tokens": [
+            {
+                "id": 2,
+                "content": "<t>",
+                "single_word": False,
+                "lstrip": False,
+                "rstrip": False,
+                "normalized": False,
+                "special": False,
+            },
+            {
+                "id": 3,
+                "content": "[EOS]",
+                "single_word": False,
+                "lstrip": False,
+                "rstrip": False,
+                "normalized": False,
+                "special": True,
+            },
+        ],
+        "decoder": {
+            "type": "ByteLevel",
+            "add_prefix_space": True,
+            "trim_offsets": True,
+            "use_regex": True,
+        },
+        "model": {"type": "BPE", "vocab": {"a": 0, "b": 1, "<t>": 2, "[EOS]": 3}, "merges": []},
+    }
+    path.write_text(json.dumps(document))
+    constraint = ChoiceConstraint(path, ["<t>a"])
+    selected = [
+        constraint.sample(mx.array(values, dtype=mx.float32), (3,))
+        for values in ([9, 0, 1, 0], [0, 9, 1, 0], [0, 0, 1, 9])
+    ]
+    assert selected == [2, 0, 3]
