@@ -91,7 +91,7 @@ def test_native_triangle_preserves_mlx_reduction_order(matrices: int) -> None:
     )
 
 
-@pytest.mark.parametrize("length", [1, 63, 64, 65, 129])
+@pytest.mark.parametrize("length", [1, 63, 64, 65, 129, 1097])
 def test_native_chunk_delta_matches_independent_recurrence_and_continuation(length: int) -> None:
     from mlx_reason_ct.chunk_delta import chunk_delta, mx
 

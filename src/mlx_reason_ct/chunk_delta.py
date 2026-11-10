@@ -89,15 +89,16 @@ def triangle_fp32(attn: Array) -> Array:
     )[0]
 
 
-def source_cumsum(g: Array) -> Array:
+def source_cumsum(g: Array, *, source_rows: int | None = None) -> Array:
     """ATen CUDA's Sklansky order, including its row-count-dependent block size.
 
     The input is a nonempty array of FP32 rows with last-axis length 64; these
     preconditions are supplied by the chunked recurrence and are not checked.
     Decay uses differences of these sums inside exp; reassociation at long CT
-    contexts measurably changes decoder states. No higher/lower precision cast.
+    contexts measurably changes decoder states. ``source_rows`` preserves the
+    original full-context partition when evaluating a bounded row group. No casts.
     """
-    rows = math.prod(g.shape[:-1])
+    rows = math.prod(g.shape[:-1]) if source_rows is None else source_rows
     threads_log = min(9, max(4, (9 + 6 - (rows - 1).bit_length()) // 2))
     block_size = min(64, 2 << threads_log)
     output: list[Array] = []
@@ -150,53 +151,66 @@ def chunk_delta(
     exponential = source_arithmetic.exp if source_bfloat16 else mx.exp
     batch, length, heads, _ = v.shape
     count = (length + 63) // 64
-    padding = count * 64 - length
     repeat = heads // q.shape[2]
-    q, k = mx.repeat(q, repeat, axis=2), mx.repeat(k, repeat, axis=2)
-
-    def chunks(x: Array) -> Array:
-        x = mx.transpose(x, (0, 2, 1, 3)).astype(mx.float32)
-        x = mx.pad(x, [(0, 0), (0, 0), (0, padding), (0, 0)])
-        return mx.reshape(x, (batch, heads, count, 64, x.shape[-1]))
-
-    # Pad T to a multiple of 64 with zeros; padded rows are sliced off the output.
-    q, k, v = chunks(q), chunks(k), chunks(v)
-    beta = chunks(beta[..., None])
-    g = source_cumsum(chunks(g[..., None])[..., 0])
     lower = mx.arange(64)[:, None] >= mx.arange(64)[None, :]
-    decay = mx.where(lower, exponential(mx.minimum(g[..., :, None] - g[..., None, :], 0)), 0)
-    kb, vb = k * beta, v * beta
-    attn = mx.where(mx.eye(64, dtype=mx.bool_) | ~lower, 0, -(kb @ k.swapaxes(-1, -2)) * decay)
-    if source_bfloat16:
-        # The source profile has a distinct reduction and gradual-underflow
-        # contract; retain its explicit materialization boundaries.
-        for i in range(1, 64):
-            row = attn[..., i, :i]
-            product = row[..., :, None] * attn[..., :i, :i]
-            attn[..., i, :i] = row + source_arithmetic.sum_product(product)
-            mx.eval(attn)
-    else:
-        attn = triangle_fp32(attn)
-    attn = attn + mx.eye(64)
-    values = attn @ vb
-    keys = attn @ (kb * exponential(g)[..., None])
-    state = state.swapaxes(-1, -2)
-    output: list[Array] = []
-    mx.eval(values, keys, decay)
-    for i in range(count):
-        qi, ki = q[:, :, i], k[:, :, i]
-        gi = g[:, :, i]
-        new = values[:, :, i] - keys[:, :, i] @ state
-        attention = (qi @ ki.swapaxes(-1, -2)) * decay[:, :, i]
-        part = (qi * exponential(gi)[..., None]) @ state + attention @ new
-        state = (
-            state * exponential(gi[..., -1, None, None])
-            + (ki * exponential(gi[..., -1, None] - gi)[..., None]).swapaxes(-1, -2) @ new
+
+    def run_group(begin: int, end: int, prior: Array) -> tuple[Array, Array]:
+        """Prepare only this group's independent blocks, then advance its recurrence."""
+        valid_end = min(end * 64, length)
+        group_padding = end * 64 - valid_end
+
+        def chunks(x: Array, *, repeat_heads: bool = False) -> Array:
+            x = x[:, begin * 64 : valid_end]
+            if repeat_heads:
+                x = mx.repeat(x, repeat, axis=2)
+            x = mx.transpose(x, (0, 2, 1, 3)).astype(mx.float32)
+            x = mx.pad(x, [(0, 0), (0, 0), (0, group_padding), (0, 0)])
+            return mx.reshape(x, (batch, heads, end - begin, 64, x.shape[-1]))
+
+        qg, kg, vg = chunks(q, repeat_heads=True), chunks(k, repeat_heads=True), chunks(v)
+        bg = chunks(beta[..., None])
+        # ATen chooses its scan partition using all logical rows, including the
+        # tail group's rows. Keep that choice while materializing one group.
+        gg = source_cumsum(chunks(g[..., None])[..., 0], source_rows=batch * heads * count)
+        decay = mx.where(lower, exponential(mx.minimum(gg[..., :, None] - gg[..., None, :], 0)), 0)
+        kb, vb = kg * bg, vg * bg
+        attn = mx.where(
+            mx.eye(64, dtype=mx.bool_) | ~lower, 0, -(kb @ kg.swapaxes(-1, -2)) * decay
         )
-        # Materialize every 16 chunks: bounds the lazy graph without a host sync
-        # per 64 tokens. Evaluation points do not change the kernels that run.
-        if i % 16 == 15:
-            mx.eval(part, state)
-        output.append(part)
-    result = mx.transpose(mx.concatenate(output, axis=2)[:, :, :length], (0, 2, 1, 3))
+        if source_bfloat16:
+            for i in range(1, 64):
+                row = attn[..., i, :i]
+                product = row[..., :, None] * attn[..., :i, :i]
+                attn[..., i, :i] = row + source_arithmetic.sum_product(product)
+                mx.eval(attn)
+        else:
+            attn = triangle_fp32(attn)
+        attn = attn + mx.eye(64)
+        values = attn @ vb
+        keys = attn @ (kb * exponential(gg)[..., None])
+        mx.eval(values, keys, decay)
+        parts: list[Array] = []
+        for i in range(end - begin):
+            qi, ki, gi = qg[:, :, i], kg[:, :, i], gg[:, :, i]
+            new = values[:, :, i] - keys[:, :, i] @ prior
+            attention = (qi @ ki.swapaxes(-1, -2)) * decay[:, :, i]
+            part = (qi * exponential(gi)[..., None]) @ prior + attention @ new
+            prior = (
+                prior * exponential(gi[..., -1, None, None])
+                + (ki * exponential(gi[..., -1, None] - gi)[..., None]).swapaxes(-1, -2) @ new
+            )
+            parts.append(part)
+        return mx.concatenate(parts, axis=2), prior
+
+    state = state.swapaxes(-1, -2)
+    output = mx.zeros((batch, heads, count * 64, v.shape[-1]), dtype=mx.float32)
+    # Sixteen 64-token blocks retain the existing evaluation cadence while
+    # bounding repeated heads, transformed keys/values and decay workspaces.
+    for begin in range(0, count, 16):
+        end = min(begin + 16, count)
+        part, state = run_group(begin, end, state)
+        output[:, :, begin * 64 : end * 64] = part
+        mx.eval(output, state)
+        del part
+    result = mx.transpose(output[:, :, :length], (0, 2, 1, 3))
     return result, mx.contiguous(state.swapaxes(-1, -2))
