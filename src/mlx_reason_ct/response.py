@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Generator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -72,6 +74,40 @@ def write_private_text(path: Path, content: str, *, overwrite: bool) -> None:
             temporary.unlink(missing_ok=True)
 
 
+@contextmanager
+def restore_outputs_on_failure(paths: Sequence[Path]) -> Generator[list[Path]]:
+    """Restore previously published paths if a later file write fails."""
+    recovery = Path(tempfile.mkdtemp(prefix=".mlx-reason-ct-backup-", dir=paths[0].parent))
+    cleanup = True
+    try:
+        backups: dict[Path, Path] = {}
+        for index, path in enumerate(paths):
+            if path.exists() or path.is_symlink():
+                backup = recovery / str(index)
+                os.link(path, backup, follow_symlinks=False)
+                backups[path] = backup
+        published: list[Path] = []
+        try:
+            yield published
+        except BaseException:
+            try:
+                for path in reversed(published):
+                    backup = backups.get(path)
+                    if backup is None:
+                        path.unlink(missing_ok=True)
+                    else:
+                        os.replace(backup, path)
+            except OSError as error:
+                cleanup = False
+                raise OSError(
+                    f"Cannot restore report files; backups retained at {recovery}"
+                ) from error
+            raise
+    finally:
+        if cleanup:
+            shutil.rmtree(recovery)
+
+
 def split_thinking(response: str) -> tuple[str | None, str]:
     """Separate template thinking-mode reasoning from the final answer.
 
@@ -86,7 +122,11 @@ def split_thinking(response: str) -> tuple[str | None, str]:
 
 
 def save_response(
-    output_dir: Path, response: str, metrics: Mapping[str, object], *, overwrite: bool = False,
+    output_dir: Path,
+    response: str,
+    metrics: Mapping[str, object],
+    *,
+    overwrite: bool = False,
     literal: bool = False,
 ) -> dict[str, str]:
     """Write ``report.txt`` and ``model_response.json`` from decoded model text.
@@ -111,13 +151,18 @@ def save_response(
     thinking, report = (None, response) if literal else split_thinking(response)
     if not literal:
         report = re.sub(r"\s*<answer>\s*</answer>\s*$", "", report)
-    write_private_text(report_path, report + "\n", overwrite=overwrite)
     record: dict[str, object] = {"schema_version": 1, "report": report}
     if thinking is not None:
         record["thinking"] = thinking
     record.update(requires_human_review=True, generation=metrics)
-    write_private_text(response_path, json.dumps(record, indent=2) + "\n", overwrite=overwrite)
-    if not report.strip() or not metrics["terminated_by_eos"]:
+    response_content = json.dumps(record, indent=2) + "\n"
+    complete = bool(report.strip()) and bool(metrics["terminated_by_eos"])
+    with restore_outputs_on_failure((report_path, response_path)) as published:
+        write_private_text(report_path, report + "\n", overwrite=overwrite)
+        published.append(report_path)
+        write_private_text(response_path, response_content, overwrite=overwrite)
+        published.append(response_path)
+    if not complete:
         raise ModelExecutionError(
             "NV-Reason-CT returned an empty or incomplete response. "
             "Partial output was retained; increase max_new_tokens for a truncated response."

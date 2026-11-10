@@ -14,7 +14,7 @@ from mlx_reason_ct import api
 from mlx_reason_ct._host_types import Nibabel
 from mlx_reason_ct._native_types import Array
 from mlx_reason_ct.ct_crop import CTCrop
-from mlx_reason_ct.errors import InvalidInputError
+from mlx_reason_ct.errors import InvalidInputError, ModelExecutionError
 from mlx_reason_ct.mlx_model import DecoderCache
 from mlx_reason_ct.mlx_weights import SHARDS
 from mlx_reason_ct.nifti import load_ct
@@ -114,6 +114,73 @@ def test_session_rejects_source_rewrite_with_preserved_size_and_mtime(
         )
         with pytest.raises(InvalidInputError, match="CT file changed"):
             session.report(tmp_path / "changed", max_new_tokens=2)
+
+
+@pytest.mark.parametrize("preexisting", [False, True])
+def test_session_restores_report_set_when_run_record_write_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, preexisting: bool
+) -> None:
+    source = tmp_path / "ct.nii"
+    nib.save(nib.Nifti1Image(np.ones((2, 2, 2), dtype=np.float32), np.eye(4)), source)
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+
+    def load_assets(model_dir: Path) -> SmallProcessor:
+        return SmallProcessor()
+
+    def load_model(model_dir: Path, *, precision: str) -> SmallModel:
+        return SmallModel()
+
+    monkeypatch.setattr(api, "_load_assets", load_assets)
+    monkeypatch.setattr(api, "_load_model", load_model)
+    output_dir = tmp_path / "report"
+    paths = tuple(output_dir / name for name in ("report.txt", "model_response.json", "run.json"))
+    if preexisting:
+        output_dir.mkdir()
+        for path in paths:
+            path.write_bytes(b"old output")
+
+    def fail_run(path: Path, content: str, *, overwrite: bool) -> None:
+        if path.name == "run.json":
+            raise OSError("injected run record failure")
+        raise AssertionError(f"unexpected output write: {path}")
+
+    monkeypatch.setattr(api, "write_private_text", fail_run)
+    with api.CTSession(source, model_dir=model_dir, anatomy_region=None) as session:
+        with pytest.raises(OSError, match="injected run record failure"):
+            session.report(output_dir, max_new_tokens=2, overwrite=True)
+
+    for path in paths:
+        if preexisting:
+            assert path.read_bytes() == b"old output"
+        else:
+            assert not path.exists()
+
+
+def test_session_keeps_failed_run_records_for_incomplete_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "ct.nii"
+    nib.save(nib.Nifti1Image(np.ones((2, 2, 2), dtype=np.float32), np.eye(4)), source)
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+
+    def load_assets(model_dir: Path) -> SmallProcessor:
+        return SmallProcessor()
+
+    def load_model(model_dir: Path, *, precision: str) -> SmallModel:
+        return SmallModel()
+
+    monkeypatch.setattr(api, "_load_assets", load_assets)
+    monkeypatch.setattr(api, "_load_model", load_model)
+    output_dir = tmp_path / "report"
+    with api.CTSession(source, model_dir=model_dir, anatomy_region=None) as session:
+        with pytest.raises(ModelExecutionError, match="incomplete response"):
+            session.report(output_dir, max_new_tokens=1)
+
+    assert (output_dir / "report.txt").read_text(encoding="utf-8") == "finding\n"
+    assert (output_dir / "model_response.json").is_file()
+    assert json.loads((output_dir / "run.json").read_text(encoding="utf-8"))["status"] == "failed"
 
 
 def test_session_does_not_publish_a_report_if_source_changes_during_generation(
