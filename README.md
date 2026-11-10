@@ -23,6 +23,10 @@ Generate reports and ask questions about 3D chest and abdomen CT, locally on App
 | :--- | :--- |
 | 3D CT · NIfTI | Reports and CT question answering |
 
+| Model | Weights download | Peak MLX memory | Measured on |
+| :--- | ---: | ---: | :--- |
+| `mlx-reason-ct` | 17.4 GB | About 14.4 GB | A `float32` chest or abdomen report |
+
 ## Use with MedMLX
 
 Use the [MedMLX MCP server](https://github.com/MedMLX/medmlx/blob/main/docs/mcp.md) to run `mlx-reason-ct` from an MCP client. Weights download on first use.
@@ -58,13 +62,15 @@ print(result["outputs"]["report"])
 Set `anatomy_region="abdomen"` for abdominal CT, or use `prompt` to ask a question.
 
 Omitting `weights_path` downloads `MedMLX/MLX-Reason-CT` into the shared MedMLX cache on
-first use. With MedMLX
-installed, `medmlx setup mlx-reason-ct` downloads it ahead of time. For local weights, pass a folder with the converted runtime files and the `mlx/` shard layout as
-`weights_path`.
-The FP32 weights occupy 17.4 GB on disk; the decoder weights are held in memory as
-their exact BF16 values. Peak MLX memory for a `float32` chest or abdomen report is about 14.4 GB;
-allow more for preprocessing, macOS and other applications. Crop whole-body scans to the chest or
-abdomen before running.
+first use; with MedMLX installed, `medmlx setup mlx-reason-ct` downloads it ahead of time.
+For local weights, pass a folder with the converted runtime files and the `mlx/` shard
+layout as `weights_path`.
+
+- The FP32 weights occupy 17.4 GB on disk; the decoder weights are held in memory as
+  their exact BF16 values.
+- Peak MLX memory for a `float32` chest or abdomen report is about 14.4 GB; allow more
+  for preprocessing, macOS and other applications.
+- Crop whole-body scans to the chest or abdomen before running.
 
 ### Command line
 
@@ -78,22 +84,28 @@ mlx-reason-ct report --input ct.nii.gz --model-dir models --output-dir outputs \
 ```
 
 `verify` checks the manifest metadata and that the runtime files and all 35 shards are
-present; it does not read their contents. Without `--prompt`, `report` requests a
-structured report for `--anatomy-region`: `chest` (the default), `abdomen`, or `none`
-for the pinned processor's plain centered crop. `--enable-thinking` uses the template's
-thinking mode. `--history` takes a JSON file of prior `[question, answer]` turns, oldest
-first, to ask a follow-up about the same CT. `--max-new-tokens` accepts 1–8192 (default
-512), `--precision` selects a profile below, and `--overwrite` replaces existing outputs.
+present; it does not read their contents. `report` takes:
+
+| Option | Meaning |
+| :--- | :--- |
+| `--prompt` | A question; without it, `report` requests a structured report for `--anatomy-region` |
+| `--anatomy-region` | `chest` (the default), `abdomen`, or `none` for the pinned processor's plain centered crop |
+| `--enable-thinking` | Uses the template's thinking mode |
+| `--history` | A JSON file of prior `[question, answer]` turns, oldest first, to ask a follow-up about the same CT |
+| `--max-new-tokens` | 1–8192 (default 512) |
+| `--precision` | A profile from [Precision](#precision) |
+| `--overwrite` | Replaces existing outputs |
 
 ### Inputs and outputs
 
-Input is one finite, scalar 3D CT in NIfTI with Hounsfield units and a coded spatial
-transform. Conflicting qform and sform transforms are rejected. Spatial units are
-converted to millimetres; unknown units are assumed to be millimetres. HU cannot be
-verified from the header. DICOM, 2D images, video and multi-volume prompts are
-unsupported. A chest or abdomen request warns when it falls back to a superior-edge
-crop; `run.json` then sets `ct_geometry.anatomy_fallback`, which is also true for
-`anatomy_region=None`.
+- **Input:** one finite, scalar 3D CT in NIfTI with Hounsfield units and a coded spatial
+  transform. Conflicting qform and sform transforms are rejected. Spatial units are
+  converted to millimetres; unknown units are assumed to be millimetres. HU cannot be
+  verified from the header.
+- **Unsupported:** DICOM, 2D images, video and multi-volume prompts.
+- **Crop fallback:** a chest or abdomen request warns when it falls back to a
+  superior-edge crop; `run.json` then sets `ct_geometry.anatomy_fallback`, which is also
+  true for `anatomy_region=None`.
 
 | File | Contents |
 | --- | --- |
@@ -102,12 +114,16 @@ crop; `run.json` then sets `ct_geometry.anatomy_fallback`, which is also true fo
 | `run.json` | Geometry, source details, precision, runtime and completion status |
 
 JSON records carry `schema_version=1`. `run` accepts keyword arguments only and returns
-`outputs` (`report`, `response`, `run`) as absolute paths with JSON-compatible
-`details`. Existing outputs need `overwrite=True`. An empty or truncated response
-keeps the partial files with `status: failed` and raises; raise `max_new_tokens` and
-retry. Invalid inputs raise `InvalidInputError`, missing or mismatched weights
-`AssetNotReadyError`, missing Metal or dependencies `MissingDependencyError`, and
-generation failures `ModelExecutionError`.
+`outputs` (`report`, `response`, `run`) as absolute paths with JSON-compatible `details`.
+Existing outputs need `overwrite=True`. An empty or truncated response keeps the partial
+files with `status: failed` and raises; raise `max_new_tokens` and retry.
+
+| Error | Raised when |
+| :--- | :--- |
+| `InvalidInputError` | Inputs are invalid |
+| `AssetNotReadyError` | Weights are missing or mismatched |
+| `MissingDependencyError` | Metal or a dependency is missing |
+| `ModelExecutionError` | Generation fails |
 
 ### Precision
 
@@ -138,19 +154,25 @@ with CTSession("ct.nii.gz", model_dir="models") as session:
 
 `generate_report` and `run` take the same options as the CLI, with `history` as a
 sequence of `(question, answer)` pairs; each call recomputes the decoder state.
-`CTSession` loads the model and encodes the CT once, then answers further questions
-with completed responses as history. Failed or truncated responses stay out of
-history, `reset()` clears history and `close()` releases the arrays. A changed CT file
-is rejected; a new CT, model or precision needs a new session. KV caches grow in
-256-token chunks (`cache_chunk_size=0` concatenates). `reuse_prefix=True` keeps a
-prefill snapshot for exact prompt matches, but with thinking off the pinned template's
-follow-ups never match, so leave it off.
 
-`tools` (function schemas), `tool_history` (assistant/tool exchanges ending in a tool
-result) and `response_choices` (complete permitted responses) support tool
-conversations; the checkpoint's template renders them and the CT is sent once.
-`tool_history` cannot be combined with `history`. `response_choices` needs the `tools` extra and
-`enable_thinking=False`. Returned tool calls are text: validate and run them yourself.
+**`CTSession`** loads the model and encodes the CT once, then answers further questions
+with completed responses as history.
+
+- Failed or truncated responses stay out of history; `reset()` clears history and
+  `close()` releases the arrays.
+- A changed CT file is rejected; a new CT, model or precision needs a new session.
+- KV caches grow in 256-token chunks (`cache_chunk_size=0` concatenates).
+- `reuse_prefix=True` keeps a prefill snapshot for exact prompt matches, but with
+  thinking off the pinned template's follow-ups never match, so leave it off.
+
+**Tool conversations.** The checkpoint's template renders these arguments, and the CT is
+sent once. Returned tool calls are text: validate and run them yourself.
+
+| Argument | Meaning |
+| :--- | :--- |
+| `tools` | Function schemas |
+| `tool_history` | Assistant/tool exchanges ending in a tool result; cannot be combined with `history` |
+| `response_choices` | Complete permitted responses; needs the `tools` extra and `enable_thinking=False` |
 
 ## License
 
