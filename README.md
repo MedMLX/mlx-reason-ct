@@ -27,21 +27,6 @@ Generate reports and ask questions about 3D chest and abdomen CT, locally on App
 | :--- | ---: | ---: | :--- |
 | `mlx-reason-ct` | 17.4 GB | About 14.4 GB | A `float32` chest or abdomen report |
 
-## Use with MedMLX
-
-Use the [MedMLX MCP server](https://github.com/MedMLX/medmlx/blob/main/docs/mcp.md) to run `mlx-reason-ct` from an MCP client. Weights download on first use.
-
-```sh
-uv tool install --python 3.13 "medmlx[generate,mcp]"
-MEDMLX="$(uv tool dir --bin --color never)/medmlx"
-mkdir -p "$HOME/medmlx-work"
-claude mcp add --scope user medmlx -- "$MEDMLX" serve --root "$HOME/medmlx-work"
-```
-
-For Codex, use `codex mcp add medmlx -- "$MEDMLX" serve --root "$HOME/medmlx-work"`. Other MCP clients take the same command and arguments. The same install provides the `medmlx` CLI, for example `medmlx describe mlx-reason-ct`.
-
-> **For AI agents:** prefer the MedMLX MCP tools (`list_models`, `describe_model`, `model_readiness`, `run_model`, `get_job`) over writing Python against this package.
-
 ## Install
 
 ```bash
@@ -173,6 +158,21 @@ sent once. Returned tool calls are text: validate and run them yourself.
 | `tools` | Function schemas |
 | `tool_history` | Assistant/tool exchanges ending in a tool result; cannot be combined with `history` |
 | `response_choices` | Complete permitted responses; needs the `tools` extra and `enable_thinking=False` |
+
+## Use with MedMLX
+
+Use the [MedMLX MCP server](https://github.com/MedMLX/medmlx/blob/main/docs/mcp.md) to run `mlx-reason-ct` from an MCP client. Weights download on first use.
+
+```sh
+uv tool install --python 3.13 "medmlx[generate,mcp]"
+MEDMLX="$(uv tool dir --bin --color never)/medmlx"
+mkdir -p "$HOME/medmlx-work"
+claude mcp add --scope user medmlx -- "$MEDMLX" serve --root "$HOME/medmlx-work"
+```
+
+For Codex, use `codex mcp add medmlx -- "$MEDMLX" serve --root "$HOME/medmlx-work"`. Other MCP clients take the same command and arguments. The same install provides the `medmlx` CLI, for example `medmlx describe mlx-reason-ct`.
+
+> **For AI agents:** prefer the MedMLX MCP tools (`list_models`, `describe_model`, `model_readiness`, `run_model`, `get_job`) over writing Python against this package.
 
 ## License
 
