@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from importlib import import_module
@@ -16,14 +17,19 @@ from jinja2.sandbox import ImmutableSandboxedEnvironment
 from mlx_reason_ct._host_types import TokenizerContract, Tokenizers
 from mlx_reason_ct._payloads import JsonValue
 from mlx_reason_ct.ct_crop import CTCrop, load_anatomy_ct
-from mlx_reason_ct.errors import InvalidPromptError
+from mlx_reason_ct.errors import InvalidInputError, InvalidPromptError
 
 
-def _tool_context(
+def validate_tool_context(
     tools: Sequence[Mapping[str, JsonValue]] | None,
     history: Sequence[Mapping[str, str]] | None,
 ) -> tuple[list[dict[str, JsonValue]], list[dict[str, object]]]:
     """Validate function declarations and complete assistant/tool exchanges."""
+    for value, name in ((cast(object, tools), "tools"), (cast(object, history), "tool_history")):
+        if value is not None and (
+            isinstance(value, str | bytes) or not isinstance(value, Sequence)
+        ):
+            raise InvalidPromptError(f"{name} must be a sequence")
     declarations: list[dict[str, JsonValue]] = []
     for item in cast(Sequence[object], tools or ()):
         if not isinstance(item, Mapping):
@@ -169,9 +175,10 @@ class Processor:
     def __init__(self, model_dir: Path) -> None:
         """Read the tokenizer, image geometry and chat template from ``model_dir``.
 
-        The tokenizer runs without padding or truncation; grid, spacing and spatial
-        size come from ``image_processor_3d/preprocessor_config.json``. The sandboxed
-        template raises ``InvalidPromptError`` from its ``raise_exception`` global.
+        The tokenizer runs without padding or truncation. Processor metadata must
+        match the native 192-cubed image and 24-cubed token grid, with finite positive
+        spacing in mm. The sandboxed template raises ``InvalidPromptError`` from
+        its ``raise_exception`` global.
         """
         tokenizers = cast(Tokenizers, import_module("tokenizers"))
         self.tokenizer: TokenizerContract = tokenizers.Tokenizer.from_file(
@@ -181,10 +188,38 @@ class Processor:
         self.tokenizer.no_truncation()
         self.image_token = "<|image_pad|>"
         self.image_id: int = int(cast(int, self.tokenizer.token_to_id(self.image_token)))
-        config = json.loads((model_dir / "image_processor_3d/preprocessor_config.json").read_text())
-        self.grid: tuple[int, int, int] = tuple(config["final_grid_size"])
-        self.spacing: tuple[float, float, float] = tuple(config["pixdim"])
-        self.shape: tuple[int, int, int] = tuple(config["spatial_size"])
+        payload: object = json.loads(
+            (model_dir / "image_processor_3d/preprocessor_config.json").read_text()
+        )
+        if not isinstance(payload, dict):
+            raise InvalidInputError("Processor configuration must be an object")
+        config = cast(dict[str, object], payload)
+        # The network's patch reshape and rotary positions fix these dimensions.
+        self.grid: tuple[int, int, int] = (24, 24, 24)
+        self.shape: tuple[int, int, int] = (192, 192, 192)
+        for key, expected in (("final_grid_size", self.grid), ("spatial_size", self.shape)):
+            value = config.get(key)
+            if (
+                not isinstance(value, list)
+                or value != list(expected)
+                or any(type(v) is not int for v in cast(list[object], value))
+            ):
+                raise InvalidInputError(f"Processor {key} must be {expected}")
+        raw_spacing = config.get("pixdim")
+        if not isinstance(raw_spacing, list):
+            raise InvalidInputError("Processor pixdim must contain three finite positive spacings")
+        spacing = cast(list[object], raw_spacing)
+        if len(spacing) != 3 or any(
+            isinstance(v, bool)
+            or not isinstance(v, int | float)
+            or not 0 < v <= sys.float_info.max
+            for v in spacing
+        ):
+            raise InvalidInputError("Processor pixdim must contain three finite positive spacings")
+        dimensions = cast(list[float], spacing)
+        self.spacing: tuple[float, float, float] = (
+            float(dimensions[0]), float(dimensions[1]), float(dimensions[2])
+        )
         self.template: Template = chat_template((model_dir / "chat_template.jinja").read_text())
 
     def prompt(
@@ -207,7 +242,7 @@ class Processor:
         checkpoint's own template renders schemas and tool responses; model
         execution never dispatches a tool. Plain Q/A history is exclusive.
         """
-        declarations, tool_turns = _tool_context(tools, tool_history)
+        declarations, tool_turns = validate_tool_context(tools, tool_history)
         if declarations and history:
             raise InvalidPromptError("tools and question/answer history are mutually exclusive")
         opening_question = history[0][0] if history else question

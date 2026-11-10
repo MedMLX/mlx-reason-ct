@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from mlx_reason_ct._native_types import Array, MetalKernel, Mlx
 
+from mlx_reason_ct.errors import InvalidInputError
 from mlx_reason_ct.runtime import import_mlx
 
 mx: Mlx = import_mlx()
@@ -77,9 +78,10 @@ def _triangle_kernel() -> MetalKernel:
 def triangle_fp32(attn: Array) -> Array:
     """Resolve strictly lower FP32 ``(..., 64, 64)`` attention in one dispatch.
 
-    The caller supplies the documented dtype and shape; this kernel wrapper
-    does not validate them.
+    Reject incompatible buffers before the fixed-size FP32 kernel dispatch.
     """
+    if attn.ndim < 2 or attn.shape[-2:] != (64, 64) or not attn.size or attn.dtype != mx.float32:
+        raise InvalidInputError("Triangle solve requires nonempty FP32 (..., 64, 64) matrices")
     return _triangle_kernel()(
         inputs=[attn],
         grid=(attn.size // 4096 * 256, 1, 1),

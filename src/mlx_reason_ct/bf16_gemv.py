@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from mlx_reason_ct._native_types import Array, MetalKernel, Mlx
 
+from mlx_reason_ct.errors import InvalidInputError
 from mlx_reason_ct.runtime import import_mlx
 
 mx: Mlx = import_mlx()
@@ -117,8 +118,19 @@ def config(in_size: int, out_size: int) -> tuple[int, int, int, int, int, int]:
 def gemv(x: Array, weight: Array) -> Array:
     """Return FP32 ``weight @ x`` for FP32 ``x`` of shape ``(K,)`` and BF16 ``weight`` ``(N, K)``.
 
-    Callers supply those dtypes and shapes; they are not validated here.
+    Reject incompatible shapes and dtypes before dispatch: the Metal kernel
+    reads raw FP32 vector and BF16 matrix pointers using the matrix dimensions.
     """
+    if (
+        x.ndim != 1
+        or weight.ndim != 2
+        or x.dtype != mx.float32
+        or weight.dtype != mx.bfloat16
+        or x.shape[0] != weight.shape[1]
+        or min(weight.shape) <= 0
+        or max(weight.shape) > 2**31 - 1
+    ):
+        raise InvalidInputError("GEMV requires FP32 (K,) and BF16 (N, K) nonempty buffers")
     out_size, in_size = weight.shape
     bm, bn, sm, sn, tm, tn = config(in_size, out_size)
     groups = (out_size + bm * sm * tm - 1) // (bm * sm * tm)

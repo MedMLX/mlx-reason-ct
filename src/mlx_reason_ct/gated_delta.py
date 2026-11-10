@@ -159,9 +159,9 @@ def gated_delta_kernel(
 
     ``q`` and ``k`` are ``(B, T, Hk, 128)``, ``v`` is ``(B, T, Hv, Dv)``, ``g``
     and ``beta`` are ``(B, T, Hv)``, and ``state`` is ``(B, Hv, Dv, 128)``.
-    ``g`` and ``state`` must be FP32 and ``Dv`` a multiple of 8. Callers must
-    also supply a positive ``Hk`` and ``Hv`` a multiple of ``Hk``; those are
-    not checked here.
+    ``g`` and ``state`` must be FP32 and ``Dv`` a multiple of 8. Head counts
+    must be positive with ``Hv`` a multiple of ``Hk``. Shapes are checked before
+    the kernel reads its raw buffers.
 
     Output shape is ``(B, T, Hv, Dv)`` with ``q``'s dtype; final state retains
     the input state's shape and dtype.
@@ -169,12 +169,19 @@ def gated_delta_kernel(
     Raises:
         InvalidInputError: the shapes or dtypes are outside the packed kernel.
     """
+    if k.ndim != 4 or v.ndim != 4:
+        raise InvalidInputError("gated_delta_kernel requires four-dimensional keys and values")
     B, T, Hk, Dk = k.shape
     Hv, Dv = v.shape[2:]
     # Each lane owns Dk/4 = 32 state elements and a SIMD-group packs 32/4 value
     # rows, so the kernel needs Dk == 128 and Dv divisible by 8.
     if not (
-        g.ndim == 3
+        min(B, T, Hk, Hv, Dv) > 0
+        and Hv % Hk == 0
+        and q.shape == k.shape
+        and v.shape[:2] == (B, T)
+        and g.shape == beta.shape == (B, T, Hv)
+        and state.shape == (B, Hv, Dv, Dk)
         and Dk == 128
         and Dv % 8 == 0
         and g.dtype == mx.float32

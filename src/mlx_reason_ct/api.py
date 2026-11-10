@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, cast
 from medmlx_core.weights import weights_revision
 
 from mlx_reason_ct._payloads import JsonValue
+from mlx_reason_ct.constrained import validate_response_choices
 
 if TYPE_CHECKING:
     from mlx_reason_ct._native_types import Array, GenerationModel, Mlx
@@ -23,8 +24,8 @@ if TYPE_CHECKING:
 from mlx_reason_ct.errors import AssetNotReadyError, InvalidInputError, ModelExecutionError
 from mlx_reason_ct.generation_state import PromptPrefix, cache_capacity
 from mlx_reason_ct.mlx_weights import ENGINE, REVISION, require_runtime_assets
-from mlx_reason_ct.processor_mlx import Processor, VolumePrompt
-from mlx_reason_ct.response import ReportFiles, save_response
+from mlx_reason_ct.processor_mlx import Processor, VolumePrompt, validate_tool_context
+from mlx_reason_ct.response import ReportFiles, save_response, write_private_text
 from mlx_reason_ct.runtime import host_info, import_mlx
 
 PRECISION_PROFILES: dict[str, str] = {
@@ -68,6 +69,10 @@ def validate_generation_options(
     overwrite: bool,
     precision: str,
     history: Sequence[tuple[str, str]] | None,
+    *,
+    tools: Sequence[Mapping[str, JsonValue]] | None = None,
+    tool_history: Sequence[Mapping[str, str]] | None = None,
+    response_choices: Sequence[str] | None = None,
 ) -> tuple[str, tuple[tuple[str, str], ...]]:
     """Check the generation options and return the prompt and history to render.
 
@@ -79,7 +84,10 @@ def validate_generation_options(
             "Unsupported NV-Reason-CT MLX precision profile; "
             "choose float32, bfloat16, bfloat16_fp32 or bfloat16_fast."
         )
-    if anatomy_region is not None and anatomy_region not in {"chest", "abdomen"}:
+    if anatomy_region is not None and (
+        not isinstance(cast(object, anatomy_region), str)
+        or anatomy_region not in {"chest", "abdomen"}
+    ):
         raise InvalidInputError("anatomy_region must be chest, abdomen, or None")
     if prompt is None:
         prompt = (
@@ -103,6 +111,13 @@ def validate_generation_options(
     ):
         raise InvalidInputError("enable_thinking and overwrite must be booleans")
     resolved_history = _validate_history(history)
+    declarations, _ = validate_tool_context(tools, tool_history)
+    if declarations and resolved_history:
+        raise InvalidInputError("tools and question/answer history are mutually exclusive")
+    if response_choices is not None:
+        if enable_thinking:
+            raise InvalidInputError("response_choices requires enable_thinking=False")
+        validate_response_choices(response_choices)
     return prompt, resolved_history
 
 
@@ -326,7 +341,8 @@ def generate_report(
             response (partial files and a ``status: failed`` run record are kept).
     """
     prompt, resolved_history = validate_generation_options(
-        prompt, anatomy_region, enable_thinking, max_new_tokens, overwrite, precision, history
+        prompt, anatomy_region, enable_thinking, max_new_tokens, overwrite, precision, history,
+        tools=tools, tool_history=tool_history, response_choices=response_choices,
     )
     model_dir = Path(model_dir).expanduser()
     output_dir = Path(output_dir).expanduser().resolve()
@@ -336,8 +352,6 @@ def generate_report(
     checkpoint_revision = weights_revision(model_dir)
     constraint = None
     if response_choices is not None:
-        if enable_thinking:
-            raise InvalidInputError("response_choices requires enable_thinking=False")
         from mlx_reason_ct.constrained import ChoiceConstraint
 
         constraint = ChoiceConstraint(model_dir / "tokenizer.json", response_choices)
@@ -386,6 +400,7 @@ def generate_report(
         prior_turns=len(resolved_history) + len(tool_history or ()) // 2,
         overwrite=overwrite,
         checkpoint_revision=checkpoint_revision,
+        literal_response=constraint is not None,
     )
 
 
@@ -406,6 +421,7 @@ def _finish_report(
     prior_turns: int,
     overwrite: bool,
     checkpoint_revision: str | None,
+    literal_response: bool = False,
 ) -> dict[str, object]:
     """Persist the same completion and geometry contract for one-shot and session calls."""
     native_profile = PRECISION_PROFILES[precision]
@@ -444,12 +460,19 @@ def _finish_report(
     }
     # Completion failure is recorded after retaining report and response files.
     try:
-        save_response(output_dir, processor.decode(tokens), metrics)
+        save_response(
+            output_dir, processor.decode(tokens), metrics,
+            overwrite=overwrite, literal=literal_response,
+        )
     except ModelExecutionError as error:
         result.update(status="failed", error=str(error))
-        Path(files.outputs()["run"]).write_text(json.dumps(result, indent=2) + "\n")
+        write_private_text(
+            Path(files.outputs()["run"]), json.dumps(result, indent=2) + "\n", overwrite=overwrite
+        )
         raise
-    Path(files.outputs()["run"]).write_text(json.dumps(result, indent=2) + "\n")
+    write_private_text(
+        Path(files.outputs()["run"]), json.dumps(result, indent=2) + "\n", overwrite=overwrite
+    )
     return result
 
 
@@ -500,7 +523,7 @@ class CTSession:
         self._chunk_size = cache_chunk_size
         self._reuse_prefix = reuse_prefix
         self._prepared: _PreparedCT | None = None
-        self._stamp: tuple[int, int, int, int] | None = None
+        self._stamp: tuple[int, int, int, int, int] | None = None
         self._history: list[tuple[str, str]] = []
         self._prefix = PromptPrefix()
         self._closed = False
@@ -512,11 +535,17 @@ class CTSession:
         with self._lock:
             return tuple(self._history)
 
+    def _source_stamp(self) -> tuple[int, int, int, int, int]:
+        """Return source identity and filesystem change metadata for cache admission."""
+        stat = self._source.stat()
+        # Writers can preserve size and restore mtime; ctime still changes on
+        # the target filesystem when the source data is rewritten.
+        return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+
     def _prepare(self) -> _PreparedCT:
         if self._closed:
             raise InvalidInputError("CTSession is closed")
-        stat = self._source.stat()
-        stamp = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+        stamp = self._source_stamp()
         if self._stamp is not None and stamp != self._stamp:
             raise InvalidInputError("CT file changed; create a new CTSession")
         if self._prepared is None:
@@ -530,8 +559,7 @@ class CTSession:
                 raise ModelExecutionError("NV-Reason-CT produced nonfinite image embeddings")
             del features
             model.release_vision()
-            after = self._source.stat()
-            if stamp != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+            if stamp != self._source_stamp():
                 raise InvalidInputError("CT file changed during encoding; create a new CTSession")
             self._prepared = _PreparedCT(
                 processor,
@@ -582,6 +610,10 @@ class CTSession:
                     prefix=self._prefix if self._reuse_prefix else None,
                     cache_chunk_size=self._chunk_size,
                 )
+                if self._stamp != self._source_stamp():
+                    raise InvalidInputError(
+                        "CT file changed during generation; create a new CTSession"
+                    )
                 result = _finish_report(
                     self._source,
                     directory,

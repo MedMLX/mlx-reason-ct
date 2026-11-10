@@ -17,6 +17,19 @@ if TYPE_CHECKING:
     from mlx_reason_ct._native_types import Array
 
 
+def validate_response_choices(choices: Sequence[str]) -> tuple[str, ...]:
+    """Validate and deduplicate literal choices before downloading or loading weights."""
+    raw = cast(object, choices)
+    if isinstance(raw, str | bytes) or not isinstance(raw, Sequence):
+        raise InvalidInputError("response_choices must contain 1 to 64 nonempty strings")
+    values = cast(Sequence[object], raw)
+    if not 1 <= len(values) <= 64:
+        raise InvalidInputError("response_choices must contain 1 to 64 nonempty strings")
+    if any(not isinstance(c, str) or not c or len(c) > 4096 for c in values):
+        raise InvalidInputError("Each response choice must be text of length 1 to 4096")
+    return tuple(dict.fromkeys(cast(Sequence[str], values)))
+
+
 class ChoiceConstraint:
     """Keep greedy MLX selection within a finite caller-provided response language.
 
@@ -33,13 +46,7 @@ class ChoiceConstraint:
         non-text, empty or over-4096-character choices, and requires the
         ``tools`` extra for LLGuidance.
         """
-        if isinstance(choices, str | bytes) or not 1 <= len(choices) <= 64:
-            raise InvalidInputError("response_choices must contain 1 to 64 nonempty strings")
-        if any(
-            not isinstance(c, str) or not c or len(c) > 4096
-            for c in cast(Sequence[object], choices)
-        ):
-            raise InvalidInputError("Each response choice must be text of length 1 to 4096")
+        self.choices = validate_response_choices(choices)
         try:
             from llguidance import LLMatcher, LLTokenizer
         except ImportError as error:
@@ -49,7 +56,6 @@ class ChoiceConstraint:
         self._tokenizer_type = LLTokenizer
         self._matcher_type = LLMatcher
         self._path = tokenizer_path
-        self.choices = tuple(dict.fromkeys(choices))
         self._matcher: LLMatcher | None = None
 
     def sample(self, logits: Array, eos_ids: tuple[int, ...]) -> int:
@@ -63,8 +69,16 @@ class ChoiceConstraint:
             alternatives: list[str] = []
             for choice in self.choices:
                 ids = tokenizer.tokenize_str(choice, parse_special=True)
-                if not ids or any(token in eos_ids for token in ids):
+                if any(token in eos_ids for token in ids):
                     raise InvalidInputError("Response choices cannot contain an EOS token")
+                # Tokenizer normalization or missing vocabulary entries must not
+                # change the requested string. Match report decoding, which
+                # removes special tokens rather than displaying their names.
+                visible = [token for token in ids if not tokenizer.is_special_token(token)]
+                if not ids or tokenizer.decode_str(visible) != choice:
+                    raise InvalidInputError(
+                        "Response choices must round-trip through the tokenizer"
+                    )
                 alternatives.append(" ".join(f"<[{token}]>" for token in ids))
             grammar = self._matcher_type.grammar_from_lark("start: " + " | ".join(alternatives))
             self._matcher = self._matcher_type(tokenizer, grammar)

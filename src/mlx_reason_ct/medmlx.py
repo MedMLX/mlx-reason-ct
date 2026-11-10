@@ -123,10 +123,9 @@ def run(
 
     # Check the options before the automatic download of the 17 GB bundle.
     validate_generation_options(
-        prompt, anatomy_region, enable_thinking, max_new_tokens, overwrite, precision, history
+        prompt, anatomy_region, enable_thinking, max_new_tokens, overwrite, precision, history,
+        tools=tools, tool_history=tool_history, response_choices=response_choices,
     )
-    if response_choices is not None and enable_thinking:
-        raise InvalidInputError("response_choices requires enable_thinking=False")
     files = ReportFiles(Path(output_dir).expanduser().resolve())
     files.require_writable(overwrite=overwrite)
     weights = (

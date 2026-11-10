@@ -30,7 +30,7 @@ def load_ct(path: Path) -> tuple[FloatArray, Affine]:
         InvalidInputError: the file is unreadable, has no coded qform or sform,
             has qform and sform that disagree (after unit scaling), has a
             non-finite, non-affine or singular transform, or is not a finite
-            3D volume.
+            nonempty 3D volume with real numeric voxels.
     """
     try:
         nib = cast(Nibabel, import_module("nibabel"))
@@ -42,6 +42,13 @@ def load_ct(path: Path) -> tuple[FloatArray, Affine]:
         image = nib.load(str(path), mmap=True)
     except (OSError, ValueError, nib.filebasedimages.ImageFileError) as error:
         raise InvalidInputError(f"Could not read NIfTI CT {path}: {error}") from error
+    # Reject unsupported headers before loading voxels. Casting complex data to
+    # float32 would silently discard its imaginary component rather than reject it.
+    shape = image.header.get_data_shape()
+    if len(shape) != 3 or any(n <= 0 for n in shape):
+        raise InvalidInputError("CT input must be a nonempty scalar 3D HU volume")
+    if image.header.get_data_dtype().kind not in "iuf":
+        raise InvalidInputError("CT input must contain real numeric HU voxels")
     qform, qcode = image.get_qform(coded=True)
     sform, scode = image.get_sform(coded=True)
     if not qcode and not scode:

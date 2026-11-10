@@ -18,8 +18,26 @@ from mlx_reason_ct.errors import InvalidInputError
         {"max_new_tokens": 0},
         {"enable_thinking": "false"},
         {"output_dir": "existing"},
+        {"anatomy_region": []},
+        {"response_choices": []},
+        {"response_choices": {"yes": 0}},
+        {"tools": {}},
+        {"tools": [{"type": "invalid"}]},
+        {"tool_history": [{"role": "assistant", "content": "call"}]},
     ],
-    ids=["suffix", "choice", "range", "boolean", "existing-output"],
+    ids=[
+        "suffix",
+        "choice",
+        "range",
+        "boolean",
+        "existing-output",
+        "region-type",
+        "empty-choices",
+        "choices-mapping",
+        "tools-mapping",
+        "tool-schema",
+        "tool-history",
+    ],
 )
 def test_run_rejects_invalid_inputs_before_downloading(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, options: dict[str, object]

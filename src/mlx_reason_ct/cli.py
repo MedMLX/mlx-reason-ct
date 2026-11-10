@@ -8,10 +8,15 @@ import re
 from collections.abc import Sequence
 from importlib import import_module
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from mlx_reason_ct.api import PRECISION_PROFILES, generate_report
-from mlx_reason_ct.mlx_weights import read_manifest
+from mlx_reason_ct.errors import InvalidInputError
+from mlx_reason_ct.mlx_weights import MANIFEST, RUNTIME_FILES, SHARDS, read_manifest
+from mlx_reason_ct.response import write_private_text
+
+if TYPE_CHECKING:
+    from huggingface_hub import DryRunFileInfo
 
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 # The download record medmlx_core.weights.weights_revision() reads.
@@ -106,7 +111,11 @@ def _commit(value: str) -> str:
 
 
 def _download(repo: str, revision: str, model_dir: Path) -> None:
-    """Download one Hub commit, check the bundle, then record the commit for its runs."""
+    """Download and admit one complete Hub commit before recording its revision.
+
+    A Hub dry run checks per-file commit metadata after downloading: local_dir
+    downloads retain old files and can return them when the network fails.
+    """
     hub = import_module("huggingface_hub")
     folder = model_dir.expanduser()
     # Remove the record first so an interrupted download never claims the new commit.
@@ -114,4 +123,13 @@ def _download(repo: str, revision: str, model_dir: Path) -> None:
     record.unlink(missing_ok=True)
     hub.snapshot_download(repo, revision=revision, local_dir=folder)
     read_manifest(folder)
-    record.write_text(revision + "\n", encoding="utf-8")
+    downloaded = cast(
+        "list[DryRunFileInfo]",
+        hub.snapshot_download(repo, revision=revision, local_dir=folder, dry_run=True),
+    )
+    inventory = {item.filename: item for item in downloaded}
+    for name in (*RUNTIME_FILES, MANIFEST, *(f"mlx/{shard}" for shard in SHARDS)):
+        item = inventory.get(name)
+        if item is None or item.commit_hash != revision or item.will_download:
+            raise InvalidInputError(f"Hub has not confirmed {name} at the requested revision")
+    write_private_text(record, revision + "\n", overwrite=True)

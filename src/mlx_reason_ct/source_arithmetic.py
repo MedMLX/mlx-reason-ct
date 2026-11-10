@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 
 import numpy as np
 
-from mlx_reason_ct.errors import MissingDependencyError
+from mlx_reason_ct.errors import InvalidInputError, MissingDependencyError
 from mlx_reason_ct.runtime import import_mlx
 
 mx: Mlx = import_mlx()
@@ -245,9 +245,19 @@ def projection(
         BF16 ``(B, T, N)``.
 
     Raises:
+        InvalidInputError: the activation, weight or bias shapes are incompatible,
+            or ``slices`` is not a positive integer.
         ValueError: ``K`` does not split into ``slices`` equal partitions whose width
             is a multiple of 8 (64 when ``sliced``).
     """
+    # Kernel strides come from x; a narrower weight or bias would read past its buffer.
+    if (
+        x.ndim != 3 or weight.ndim != 2 or not x.size or not weight.size
+        or x.shape[-1] != weight.shape[1]
+        or (bias is not None and bias.shape != (weight.shape[0],))
+        or type(slices) is not int or slices <= 0
+    ):
+        raise InvalidInputError("Projection requires compatible (B, T, K), (N, K), (N,) buffers")
     x, weight = _operand(x), _operand(weight)
     length, width = x.shape[-1], weight.shape[0]
     part_width = length // slices
@@ -298,6 +308,8 @@ def cached_projection(x: Array, weight: Array) -> Array:
 
     ``(K, N)`` must be a key of ``OBSERVED_LANES``.
     """
+    if weight.ndim != 2 or x.shape != (1, 1, weight.shape[1]):
+        raise InvalidInputError("Cached projection requires matching (1, 1, K) and (N, K) buffers")
     width, length = weight.shape
     lanes = OBSERVED_LANES[(length, width)]
     return kernel("cached_projection")(
@@ -337,8 +349,15 @@ def layernorm(values: Array, weight: Array, bias: Array, eps: float) -> Array:
     """LayerNorm over the last axis with FP32 statistics, returned as BF16.
 
     ``weight`` and ``bias`` have the last-axis width; ``values`` is any shape ending
-    in that width.
+    in that width. Reject incompatible affine buffers before dispatch.
     """
+    if (
+        values.ndim < 1 or not values.size
+        or weight.shape != (values.shape[-1],) or bias.shape != weight.shape
+    ):
+        raise InvalidInputError(
+            "LayerNorm requires nonempty values and matching weight/bias widths"
+        )
     fp = values.astype(mx.float32)
     width, rows = fp.shape[-1], fp.size // fp.shape[-1]
     reciprocal = mx.array(
@@ -397,6 +416,16 @@ def gated_delta(
     Returns:
         ``(output, state)``: float32, shaped like ``v`` and ``state``.
     """
+    if (
+        q.ndim != 4 or q.shape[:2] != (1, 1) or q.shape[-1] != 128
+        or not 0 < q.shape[2] <= 32 or 32 % q.shape[2]
+        or k.shape != q.shape or v.shape != (1, 1, 32, 128)
+        or decay.shape != beta.shape or decay.shape != (1, 1, 32)
+        or state.shape != (1, 32, 128, 128)
+    ):
+        raise InvalidInputError(
+            "Source recurrence requires one token, 32 value heads and full state"
+        )
     output, updated = kernel("recurrence")(
         inputs=[q, k, v, decay, beta, state.swapaxes(-1, -2)],
         template=[("Ratio", 32 // q.shape[2])],
@@ -462,6 +491,13 @@ def attention(q: Array, k: Array, v: Array, *, causal: bool, offset: int) -> Arr
         or 128 (decoder). A single-token decoder query against 13,824-16,384 cached
         keys uses the source's split-key dispatch.
     """
+    if (
+        q.ndim != 4 or k.ndim != 4 or v.shape != k.shape or not q.size or not k.size
+        or q.shape[0] != k.shape[0] or q.shape[-1] != k.shape[-1]
+        or q.shape[-1] not in (72, 256) or q.shape[1] % k.shape[1]
+        or type(offset) is not int or offset < 0
+    ):
+        raise InvalidInputError("Attention requires compatible nonempty Q/K/V and grouped heads")
     if (
         q.shape == (1, 16, 1, 256)
         and k.shape[:2] == (1, 4)
