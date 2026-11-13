@@ -25,6 +25,15 @@ mx = import_mlx()
 nib = cast(Nibabel, import_module("nibabel"))
 
 
+def write_ct(path: Path, *, changed: bool = False) -> None:
+    """Write one of two real CT crops with equal shape for source-change checks."""
+    source = Path.home() / ".cache/medmlx/test-data/hcc_063_ct.nii.gz"
+    volume = np.asarray(nib.load(str(source)).dataobj, dtype=np.float32)
+    start = 105 if changed else 100
+    values = volume[start : start + 2, 210:212, 55:57]
+    nib.save(nib.Nifti1Image(values, np.eye(4)), path)
+
+
 class SmallProcessor:
     """Use real NIfTI input with a tiny deterministic tokenizer boundary."""
 
@@ -88,7 +97,7 @@ def test_session_rejects_source_rewrite_with_preserved_size_and_mtime(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     source = tmp_path / "ct.nii"
-    nib.save(nib.Nifti1Image(np.ones((2, 2, 2), dtype=np.float32), np.eye(4)), source)
+    write_ct(source)
     model_dir = tmp_path / "model"
     model_dir.mkdir()
 
@@ -104,7 +113,7 @@ def test_session_rejects_source_rewrite_with_preserved_size_and_mtime(
         session.report(tmp_path / "first", max_new_tokens=2)
         session.report(tmp_path / "unchanged", max_new_tokens=2)
         original = source.stat()
-        nib.save(nib.Nifti1Image(np.full((2, 2, 2), 4, dtype=np.float32), np.eye(4)), source)
+        write_ct(source, changed=True)
         os.utime(source, ns=(original.st_atime_ns, original.st_mtime_ns))
         changed = source.stat()
         assert (changed.st_ino, changed.st_size, changed.st_mtime_ns) == (
@@ -121,7 +130,7 @@ def test_session_restores_report_set_when_run_record_write_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, preexisting: bool
 ) -> None:
     source = tmp_path / "ct.nii"
-    nib.save(nib.Nifti1Image(np.ones((2, 2, 2), dtype=np.float32), np.eye(4)), source)
+    write_ct(source)
     model_dir = tmp_path / "model"
     model_dir.mkdir()
 
@@ -161,7 +170,7 @@ def test_session_keeps_failed_run_records_for_incomplete_generation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     source = tmp_path / "ct.nii"
-    nib.save(nib.Nifti1Image(np.ones((2, 2, 2), dtype=np.float32), np.eye(4)), source)
+    write_ct(source)
     model_dir = tmp_path / "model"
     model_dir.mkdir()
 
@@ -187,16 +196,14 @@ def test_session_does_not_publish_a_report_if_source_changes_during_generation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     source = tmp_path / "ct.nii"
-    nib.save(nib.Nifti1Image(np.ones((2, 2, 2), dtype=np.float32), np.eye(4)), source)
+    write_ct(source)
     model_dir = tmp_path / "model"
     model_dir.mkdir()
 
     class MutatingModel(SmallModel):
         def logits(self, hidden: Array) -> Array:
             if self._steps == 0:
-                nib.save(
-                    nib.Nifti1Image(np.full((2, 2, 2), 4, dtype=np.float32), np.eye(4)), source
-                )
+                write_ct(source, changed=True)
             return super().logits(hidden)
 
     def load_assets(model_dir: Path) -> SmallProcessor:
@@ -222,7 +229,7 @@ def test_constrained_report_preserves_the_literal_selected_choice(
     """Exercise the actual tokenizer, grammar, preprocessing and report writer."""
     pytest.importorskip("llguidance")
     source = tmp_path / "ct.nii"
-    nib.save(nib.Nifti1Image(np.ones((2, 2, 2), dtype=np.float32), np.eye(4)), source)
+    write_ct(source)
     model_dir = tmp_path / "model"
     (model_dir / "mlx").mkdir(parents=True)
     for name in SHARDS:
