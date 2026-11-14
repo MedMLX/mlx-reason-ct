@@ -36,10 +36,10 @@ uv pip install "mlx-reason-ct>=0.6.0"
 ## Run
 
 ```python
-from mlx_reason_ct.medmlx import run
+from mlx_reason_ct import generate_report
 
-result = run(image_path="ct.nii.gz", output_dir="outputs")
-print(result["outputs"]["report"])
+result = generate_report(image_path="ct.nii.gz", output_dir="outputs")
+print(result["details"]["report"])
 ```
 
 Set `anatomy_region="abdomen"` for abdominal CT, or use `prompt` to ask a question.
@@ -90,16 +90,15 @@ present; it does not read their contents. `report` takes:
   superior-edge crop; `run.json` then sets `ct_geometry.anatomy_fallback`, which is also
   true for `anatomy_region=None`.
 
-| File | Contents |
-| --- | --- |
-| `report.txt` | The answer, without reasoning or a trailing empty `<answer></answer>` |
-| `model_response.json` | The answer, generation metrics and, with thinking on, `thinking` |
-| `run.json` | Geometry, source details, precision, runtime and completion status |
+| Output role | File | Contents |
+| --- | --- | --- |
+| `report` | `report.txt` | The answer, without reasoning or a trailing empty `<answer></answer>` |
+| `response` | `model_response.json` | The answer, generation metrics and, with thinking on, `thinking` |
+| `metadata` | `run.json` | Geometry, source details, precision, runtime and completion status |
 
-JSON records carry `schema_version=1`. `run` accepts keyword arguments only and returns
-`outputs` (`report`, `response`, `run`) as absolute paths, an `artifacts` entry for each,
-and the `run.json` record as `details`, with the text of `report.txt` added as
-`details["report"]`.
+JSON records carry `schema_version=1`. `generate_report` accepts keyword arguments only
+and returns `outputs` by role as absolute paths, an `artifacts` entry for each, and the
+`run.json` record as `details`, with the text of `report.txt` added as `details["report"]`.
 Existing outputs need `overwrite=True`. An empty or truncated response keeps the partial
 files with `status: failed` and raises; raise `max_new_tokens` and retry.
 
@@ -121,26 +120,27 @@ Both profiles use NVIDIA's BF16 weights unchanged. The published bundle stores t
 FP32 without retraining.
 Decoding is greedy. Inference requires Apple Silicon with Metal.
 
-### Python API
+### Several questions about one CT
 
 ```python
-from mlx_reason_ct import CTSession, generate_report
+from mlx_reason_ct import load_model
 
-generate_report("ct.nii.gz", "outputs", model_dir="models", anatomy_region="abdomen")
-
-with CTSession("ct.nii.gz", model_dir="models") as session:
-    first = session.report("out/first")
-    followup = session.report("out/followup", prompt="Describe the lung findings.")
+with load_model(image_path="ct.nii.gz", anatomy_region="abdomen") as session:
+    first = session.generate_report(output_dir="out/first")
+    question = "Describe the liver findings."
+    followup = session.generate_report(
+        output_dir="out/followup",
+        prompt=question,
+        history=[("Write a structured abdominal CT report.", first["details"]["report"])],
+    )
 ```
 
-`generate_report` and `run` take the same options as the CLI, with `history` as a
-sequence of `(question, answer)` pairs; each call recomputes the decoder state.
+`load_model` loads the model and encodes the CT on the first call, then releases the
+visual weights, so a session serves one CT at the one-shot peak memory. Its
+`generate_report` takes the per-call options (`prompt`, `history`, `tools`,
+`tool_history`, `response_choices`, `enable_thinking`, `max_new_tokens`, `overwrite`);
+`history` is a sequence of already-answered `(question, answer)` pairs, oldest first.
 
-**`CTSession`** loads the model and encodes the CT once, then answers further questions
-with completed responses as history.
-
-- Failed or truncated responses stay out of history; `reset()` clears history and
-  `close()` releases the arrays.
 - A changed CT file is rejected; a new CT, model or precision needs a new session.
 - KV caches grow in 256-token chunks (`cache_chunk_size=0` concatenates).
 - `reuse_prefix=True` keeps a prefill snapshot for exact prompt matches, but with

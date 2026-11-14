@@ -6,36 +6,20 @@ from typing import TYPE_CHECKING
 __version__ = "0.6.0"
 
 if TYPE_CHECKING:
-    from mlx_reason_ct.api import CTSession, generate_report
-    from mlx_reason_ct.errors import InvalidInputError, InvalidPromptError, ModelExecutionError
+    from mlx_reason_ct.medmlx import generate_report, load_model
 
-__all__ = [
-    "CTSession",
-    "generate_report",
-    "InvalidInputError",
-    "InvalidPromptError",
-    "ModelExecutionError",
-]
-
-_EXPORTS = {
-    "CTSession": "mlx_reason_ct.api",
-    "generate_report": "mlx_reason_ct.api",
-    "InvalidInputError": "mlx_reason_ct.errors",
-    "InvalidPromptError": "mlx_reason_ct.errors",
-    "ModelExecutionError": "mlx_reason_ct.errors",
-}
+__all__ = ["generate_report", "load_model"]
 
 
 def __getattr__(name: str) -> object:
     """Import a public name on first access and cache it in the package."""
-    module = _EXPORTS.get(name)
-    if module is None:
+    if name not in __all__:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    value = getattr(import_module(module), name)
+    value = getattr(import_module(f"{__name__}.medmlx"), name)
     globals()[name] = value
     return value
 
 
 def __dir__() -> list[str]:
     """List loaded and lazily exported names."""
-    return sorted({*globals(), *_EXPORTS})
+    return sorted({*globals(), *__all__})

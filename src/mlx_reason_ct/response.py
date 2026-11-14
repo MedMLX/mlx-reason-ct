@@ -24,11 +24,11 @@ class ReportFiles:
     directory: Path
 
     def outputs(self) -> dict[str, str]:
-        """Return the ``report``, ``response`` and ``run`` file paths as POSIX strings."""
+        """Return the ``report``, ``response`` and ``metadata`` paths as POSIX strings."""
         return {
             "report": (self.directory / "report.txt").as_posix(),
             "response": (self.directory / "model_response.json").as_posix(),
-            "run": (self.directory / "run.json").as_posix(),
+            "metadata": (self.directory / "run.json").as_posix(),
         }
 
     def require_writable(self, *, overwrite: bool) -> None:

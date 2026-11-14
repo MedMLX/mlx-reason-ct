@@ -1,9 +1,10 @@
-"""Runner arguments are checked before any weight download."""
+"""generate_report checks its arguments before any weight download."""
 
 from collections.abc import Callable
 from pathlib import Path
 from typing import NoReturn, cast
 
+import medmlx_core.weights as core_weights
 import pytest
 from medmlx_core.outputs import validate_outputs
 
@@ -42,7 +43,7 @@ from mlx_reason_ct.errors import InvalidInputError
         "tool-history",
     ],
 )
-def test_run_rejects_invalid_inputs_before_downloading(
+def test_generate_report_rejects_invalid_inputs_before_downloading(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, options: dict[str, object]
 ) -> None:
     """Refuse each category of bad argument without starting the 17 GB download."""
@@ -52,22 +53,22 @@ def test_run_rejects_invalid_inputs_before_downloading(
     (tmp_path / "existing").mkdir()
     (tmp_path / "existing/report.txt").write_text("keep")
 
-    def download(model_id: str) -> NoReturn:
+    def download(model_id: str, **_options: object) -> NoReturn:
         raise AssertionError(f"downloaded {model_id} before checking arguments")
 
-    monkeypatch.setattr(medmlx, "weights_dir", download)
+    monkeypatch.setattr(core_weights, "weights_dir", download)
     arguments: dict[str, object] = {"image_path": image, "output_dir": tmp_path / "out"}
     for key, value in options.items():
         if key in {"image_path", "output_dir"} and isinstance(value, str):
             value = tmp_path / value
         arguments[key] = value
     # Invalid argument types are the point of this test, so call without static checks.
-    run = cast(Callable[..., object], medmlx.run)
+    generate_report = cast(Callable[..., object], medmlx.generate_report)
     with pytest.raises(InvalidInputError):
-        run(**arguments)
+        generate_report(**arguments)
 
 
-def test_run_returns_report_text_and_artifacts(
+def test_generate_report_returns_report_text_and_artifacts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The result carries the report text and describes all three files as reports."""
@@ -81,11 +82,13 @@ def test_run_returns_report_text_and_artifacts(
         (output_dir / "report.txt").write_text("No acute finding.\n", encoding="utf-8")
         return {"status": "succeeded"}
 
-    monkeypatch.setattr(api, "generate_report", generate)
-    result = medmlx.run(image_path=image, weights_path=bundle, output_dir=tmp_path / "out")
+    monkeypatch.setattr(api, "write_report", generate)
+    result = medmlx.generate_report(
+        image_path=image, weights_path=bundle, output_dir=tmp_path / "out"
+    )
 
     paths, artifacts = validate_outputs(result)
-    assert set(paths) == {"report", "response", "run"}
+    assert set(paths) == {"report", "response", "metadata"}
     assert {entry["kind"] for entry in artifacts.values()} == {"report"}
     assert {entry["coordinate_space"] for entry in artifacts.values()} == {"not_applicable"}
     assert result["details"] == {"status": "succeeded", "report": "No acute finding."}

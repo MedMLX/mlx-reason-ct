@@ -10,7 +10,9 @@ from threading import Lock
 from time import perf_counter
 from typing import TYPE_CHECKING, cast
 
-from medmlx_core.weights import weights_revision
+from medmlx_core.files import PathLike, input_file
+from medmlx_core.outputs import artifact
+from medmlx_core.weights import model_folder, weights_revision
 
 from mlx_reason_ct._payloads import JsonValue
 from mlx_reason_ct.constrained import validate_response_choices
@@ -293,7 +295,7 @@ def generate(
     }
 
 
-def generate_report(
+def write_report(
     source: str | Path,
     output_dir: str | Path,
     *,
@@ -474,7 +476,7 @@ def _finish_report(
     outputs = files.outputs()
     report_path = Path(outputs["report"])
     response_path = Path(outputs["response"])
-    run_path = Path(outputs["run"])
+    run_path = Path(outputs["metadata"])
     incomplete: ModelExecutionError | None = None
     with restore_outputs_on_failure((report_path, response_path, run_path)) as published:
         try:
@@ -497,6 +499,28 @@ def _finish_report(
     return result
 
 
+def ct_file(image_path: PathLike) -> Path:
+    """Return the absolute CT path, refusing anything but an existing NIfTI file."""
+    image = input_file("image_path", image_path).resolve()
+    if not image.name.endswith((".nii", ".nii.gz")):
+        raise InvalidInputError(f"image_path must be a NIfTI CT file (.nii or .nii.gz): {image}")
+    return image
+
+
+def report_result(output_dir: Path, record: dict[str, object]) -> dict[str, object]:
+    """Describe one written report as a MedMLX result.
+
+    ``details`` is the ``run.json`` record plus the text of ``report.txt`` as
+    ``details["report"]``: the answer without reasoning or an empty trailing
+    ``<answer></answer>``.
+    """
+    outputs = ReportFiles(output_dir).outputs()
+    details = dict(record)
+    details["report"] = Path(outputs["report"]).read_text(encoding="utf-8").removesuffix("\n")
+    entry = artifact(kind="report", coordinate_space="not_applicable")
+    return {"outputs": outputs, "artifacts": dict.fromkeys(outputs, entry), "details": details}
+
+
 @dataclass
 class _PreparedCT:
     processor: Processor
@@ -507,13 +531,14 @@ class _PreparedCT:
 
 
 class CTSession:
-    """Reuse one loaded model and one CT's projected embeddings across questions.
+    """One CT encoded once, with the model kept loaded, for several reports or questions.
 
-    Loading is lazy on the first report. Completed responses enter history as raw
-    decoded text, without report-specific thinking separation or empty-tag cleanup;
-    failed/truncated responses do not. Calls are serialized per session. Closing
-    releases owned arrays and history without changing process-wide MLX caches.
-    A changed CT file is rejected: create a new session to encode a new image.
+    The model loads and encodes the CT on the first call; its visual weights are
+    then released, so a session serves one CT. :meth:`generate_report` takes the
+    one-shot ``generate_report`` options that do not change the encoding; pass
+    earlier turns explicitly as ``history`` or ``tool_history``. Calls are
+    serialized per session. A changed CT file is rejected. Closing releases the
+    model and embeddings without changing process-wide MLX caches.
 
     ``cache_chunk_size`` grows KV storage in multiples of 256 tokens; zero selects
     the original concatenating cache. ``reuse_prefix`` additionally snapshots a
@@ -524,37 +549,30 @@ class CTSession:
 
     def __init__(
         self,
-        source: str | Path,
         *,
-        model_dir: str | Path,
+        image_path: PathLike,
+        weights_path: PathLike | None = None,
         anatomy_region: str | None = "chest",
         precision: str = "bfloat16_fast",
         cache_chunk_size: int = 256,
         reuse_prefix: bool = False,
     ) -> None:
-        """Validate options and remember the request; assets load on the first report."""
+        """Check the CT and options, then resolve (downloading if omitted) the weights."""
+        self._source = ct_file(image_path)
         validate_generation_options(None, anatomy_region, False, 512, False, precision, None)
         cache_capacity(0, cache_chunk_size)
         if type(reuse_prefix) is not bool:
             raise InvalidInputError("reuse_prefix must be boolean")
-        self._source = Path(source).expanduser().resolve()
-        self._model_dir = Path(model_dir).expanduser()
+        self._model_dir = model_folder("mlx-reason-ct", weights_path)
         self._anatomy_region = anatomy_region
         self._precision = precision
         self._chunk_size = cache_chunk_size
         self._reuse_prefix = reuse_prefix
         self._prepared: _PreparedCT | None = None
         self._stamp: tuple[int, int, int, int, int] | None = None
-        self._history: list[tuple[str, str]] = []
         self._prefix = PromptPrefix()
         self._closed = False
         self._lock = Lock()
-
-    @property
-    def history(self) -> tuple[tuple[str, str], ...]:
-        """Completed ``(question, answer)`` turns in this session, oldest first."""
-        with self._lock:
-            return tuple(self._history)
 
     def _source_stamp(self) -> tuple[int, int, int, int, int]:
         """Return source identity and filesystem change metadata for cache admission."""
@@ -564,11 +582,9 @@ class CTSession:
         return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
 
     def _prepare(self) -> _PreparedCT:
-        if self._closed:
-            raise InvalidInputError("CTSession is closed")
         stamp = self._source_stamp()
         if self._stamp is not None and stamp != self._stamp:
-            raise InvalidInputError("CT file changed; create a new CTSession")
+            raise InvalidInputError("CT file changed; load the model for it again")
         if self._prepared is None:
             processor = _load_assets(self._model_dir)
             pixels, crop = processor.image(self._source, self._anatomy_region)
@@ -581,7 +597,7 @@ class CTSession:
             del features
             model.release_vision()
             if stamp != self._source_stamp():
-                raise InvalidInputError("CT file changed during encoding; create a new CTSession")
+                raise InvalidInputError("CT file changed during encoding; load the model again")
             self._prepared = _PreparedCT(
                 processor,
                 model,
@@ -592,27 +608,38 @@ class CTSession:
             self._stamp = stamp
         return self._prepared
 
-    def report(
+    def generate_report(
         self,
-        output_dir: str | Path,
         *,
+        output_dir: PathLike,
         prompt: str | None = None,
         enable_thinking: bool = False,
         max_new_tokens: int = 512,
+        history: Sequence[tuple[str, str]] | None = None,
+        tools: Sequence[Mapping[str, JsonValue]] | None = None,
+        tool_history: Sequence[Mapping[str, str]] | None = None,
+        response_choices: Sequence[str] | None = None,
         overwrite: bool = False,
     ) -> dict[str, object]:
-        """Write a report/follow-up with ``generate_report``'s durable completion contract."""
+        """Write one report or answer for the session's CT; see ``generate_report``.
+
+        Raises:
+            RuntimeError: The session is closed.
+        """
         with self._lock:
             if self._closed:
-                raise InvalidInputError("CTSession is closed")
-            question, history = validate_generation_options(
+                raise RuntimeError("NV-Reason-CT session is closed")
+            question, resolved_history = validate_generation_options(
                 prompt,
                 self._anatomy_region,
                 enable_thinking,
                 max_new_tokens,
                 overwrite,
                 self._precision,
-                self._history,
+                history,
+                tools=tools,
+                tool_history=tool_history,
+                response_choices=response_choices,
             )
             directory = Path(output_dir).expanduser().resolve()
             files = ReportFiles(directory)
@@ -621,7 +648,14 @@ class CTSession:
             mx = import_mlx()
             mx.reset_peak_memory()
             prepared = self._prepare()
-            inputs = prepared.processor.prompt(question, enable_thinking, history)
+            constraint = None
+            if response_choices is not None:
+                from mlx_reason_ct.constrained import ChoiceConstraint
+
+                constraint = ChoiceConstraint(self._model_dir / "tokenizer.json", response_choices)
+            inputs = prepared.processor.prompt(
+                question, enable_thinking, resolved_history, tools=tools, tool_history=tool_history
+            )
             try:
                 tokens, metrics = generate(
                     prepared.model,
@@ -630,12 +664,13 @@ class CTSession:
                     max_new_tokens=max_new_tokens,
                     prefix=self._prefix if self._reuse_prefix else None,
                     cache_chunk_size=self._chunk_size,
+                    constraint=constraint,
                 )
                 if self._stamp != self._source_stamp():
                     raise InvalidInputError(
-                        "CT file changed during generation; create a new CTSession"
+                        "CT file changed during generation; load the model for it again"
                     )
-                result = _finish_report(
+                record = _finish_report(
                     self._source,
                     directory,
                     files,
@@ -648,36 +683,25 @@ class CTSession:
                     started=started,
                     precision=self._precision,
                     anatomy_region=self._anatomy_region,
-                    prior_turns=len(history),
+                    prior_turns=len(resolved_history) + len(tool_history or ()) // 2,
                     overwrite=overwrite,
                     checkpoint_revision=prepared.weights_revision,
+                    literal_response=constraint is not None,
                 )
             except BaseException:
                 self._prefix = PromptPrefix()
                 raise
-            self._history.append((question, prepared.processor.decode(tokens)))
-            return result
-
-    def reset(self) -> None:
-        """Forget conversation/prefix state while retaining the model and CT embeddings."""
-        with self._lock:
-            if self._closed:
-                raise InvalidInputError("CTSession is closed")
-            self._history.clear()
-            self._prefix = PromptPrefix()
+            return report_result(directory, record)
 
     def close(self) -> None:
-        """Release the model, CT embeddings and history; further reports are rejected."""
+        """Release the model and CT embeddings; later calls raise ``RuntimeError``."""
         with self._lock:
             self._prepared = None
             self._prefix = PromptPrefix()
-            self._history.clear()
             self._closed = True
 
     def __enter__(self) -> CTSession:
-        """Return this session, rejecting use after ``close``."""
-        if self._closed:
-            raise InvalidInputError("CTSession is closed")
+        """Return this session for a ``with`` block that closes it on exit."""
         return self
 
     def __exit__(self, *exc: object) -> None:

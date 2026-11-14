@@ -1,11 +1,10 @@
-"""MedMLX declaration and offline CT report generation with explicit converted assets."""
+"""NV-Reason-CT's MedMLX operation, its per-CT session and the declaration."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from os import PathLike
 from pathlib import Path
-from typing import Literal, cast
+from typing import TYPE_CHECKING, Literal
 
 from medmlx_core.errors import (
     AssetNotReadyError,
@@ -13,17 +12,20 @@ from medmlx_core.errors import (
     MissingDependencyError,
     ModelExecutionError,
 )
-from medmlx_core.outputs import artifact
-from medmlx_core.weights import weights_dir
+from medmlx_core.files import PathLike
+from medmlx_core.weights import model_folder
 
 from mlx_reason_ct._payloads import JsonValue
 from mlx_reason_ct.response import ReportFiles
 
+if TYPE_CHECKING:
+    from mlx_reason_ct.api import CTSession
+
 MODEL: dict[str, str | float] = {
     "id": "mlx-reason-ct",
     "label": "NV-Reason-CT",
-    "task": "generation",
-    "run": "mlx_reason_ct.medmlx:run",
+    "task": "report-generation",
+    "run": "mlx_reason_ct.medmlx:generate_report",
     "summary": "CT reporting and question answering with NV-Reason-CT on Metal; BF16 weights.",
     # Measured MLX peaks: 12.19 GB for bfloat16_fast chest and abdominal reports,
     # 12.46 GB for source bfloat16. The model resamples every scan to one grid, so
@@ -31,22 +33,25 @@ MODEL: dict[str, str | float] = {
     "peak_memory_gb": 12.5,
 }
 
+type Region = Literal["chest", "abdomen"] | None
+type Precision = Literal["bfloat16_fast", "bfloat16"]
 
-def run(
+
+def generate_report(
     *,
-    image_path: str | PathLike[str],
-    weights_path: str | PathLike[str] | None = None,
-    output_dir: str | PathLike[str],
-    overwrite: bool = False,
+    image_path: PathLike,
+    output_dir: PathLike,
+    weights_path: PathLike | None = None,
     prompt: str | None = None,
-    anatomy_region: Literal["chest", "abdomen"] | None = "chest",
+    anatomy_region: Region = "chest",
     enable_thinking: bool = False,
     max_new_tokens: int = 512,
-    precision: Literal["bfloat16_fast", "bfloat16"] = "bfloat16_fast",
+    precision: Precision = "bfloat16_fast",
     history: Sequence[tuple[str, str]] | None = None,
     tools: Sequence[Mapping[str, JsonValue]] | None = None,
     tool_history: Sequence[Mapping[str, str]] | None = None,
     response_choices: Sequence[str] | None = None,
+    overwrite: bool = False,
 ) -> dict[str, object]:
     """Generate a report from one scalar 3D HU NIfTI CT on Apple Silicon Metal.
 
@@ -99,30 +104,24 @@ def run(
             the ``tools`` extra and thinking disabled.
 
     Returns:
-        ``{"outputs": {"report", "response", "run"}, "artifacts": ..., "details": ...}``:
-        absolute POSIX file paths, a ``report`` artifact for each file (all
-        ``not_applicable`` coordinate space), and the ``run.json`` record with the
-        text of ``report.txt`` added as ``details["report"]``. That text is the
-        answer without reasoning or a trailing empty ``<answer></answer>``.
+        ``{"outputs": {"report", "response", "metadata"}, "artifacts": ..., "details": ...}``:
+        absolute POSIX paths of ``report.txt``, ``model_response.json`` and ``run.json``,
+        a ``report`` artifact for each (``not_applicable`` coordinate space), and the
+        ``run.json`` record with the text of ``report.txt`` added as ``details["report"]``.
+        That text is the answer without reasoning or a trailing empty ``<answer></answer>``.
 
     Raises:
         InvalidInputError: ``image_path`` is not an existing ``.nii``/``.nii.gz``
             file, ``overwrite`` is not a bool, outputs exist without ``overwrite``,
             or the options or CT are invalid.
-        AssetNotReadyError: ``weights_path`` is not a directory or the bundle is
+        AssetNotReadyError: ``weights_path`` is not a folder or the bundle is
             missing or mismatched.
         MissingDependencyError: an import fails or Metal is unavailable.
         ModelExecutionError: generation failed, or the response was empty or truncated.
     """
-    image = Path(image_path).expanduser().resolve()
-    if not image.name.endswith((".nii", ".nii.gz")):
-        raise InvalidInputError(f"image_path must be a NIfTI CT file (.nii or .nii.gz): {image}")
-    if not image.is_file():
-        raise InvalidInputError(f"image_path does not exist: {image}")
-    if not isinstance(cast(object, overwrite), bool):
-        raise InvalidInputError("overwrite must be a boolean")
-    from mlx_reason_ct.api import validate_generation_options
+    from mlx_reason_ct.api import ct_file, validate_generation_options
 
+    image = ct_file(image_path)
     # Check the options before the automatic download of the 17 GB bundle.
     validate_generation_options(
         prompt, anatomy_region, enable_thinking, max_new_tokens, overwrite, precision, history,
@@ -130,19 +129,11 @@ def run(
     )
     files = ReportFiles(Path(output_dir).expanduser().resolve())
     files.require_writable(overwrite=overwrite)
-    weights = (
-        weights_dir("mlx-reason-ct") if weights_path is None else Path(weights_path).expanduser()
-    )
-    if not weights.is_dir():
-        raise AssetNotReadyError(
-            f"NV-Reason-CT converted weights directory not found: {weights}",
-            hint="Pass the model folder containing tokenizer/configuration files "
-            "and mlx/ FP32 shards.",
-        )
+    weights = model_folder("mlx-reason-ct", weights_path)
     try:
-        from mlx_reason_ct.api import generate_report
+        from mlx_reason_ct.api import report_result, write_report
 
-        details = generate_report(
+        record = write_report(
             image,
             files.directory,
             model_dir=weights,
@@ -167,11 +158,32 @@ def run(
         raise ModelExecutionError(
             f"NV-Reason-CT generation failed: {error}; check output permissions and Metal memory.",
         ) from error
-    outputs = files.outputs()
-    details["report"] = Path(outputs["report"]).read_text(encoding="utf-8").removesuffix("\n")
-    artifacts = {
-        "report": artifact(kind="report", coordinate_space="not_applicable"),
-        "response": artifact(kind="report", coordinate_space="not_applicable"),
-        "run": artifact(kind="report", coordinate_space="not_applicable"),
-    }
-    return {"outputs": outputs, "artifacts": artifacts, "details": details}
+    return report_result(files.directory, record)
+
+
+def load_model(
+    *,
+    image_path: PathLike,
+    weights_path: PathLike | None = None,
+    anatomy_region: Region = "chest",
+    precision: Precision = "bfloat16_fast",
+    cache_chunk_size: int = 256,
+    reuse_prefix: bool = False,
+) -> CTSession:
+    """Load NV-Reason-CT for several reports or questions about one CT.
+
+    The CT is encoded once and the visual weights are then released, which keeps
+    the peak at the one-shot level, so a session serves the one CT it was loaded
+    for. ``image_path``, ``weights_path``, ``anatomy_region`` and ``precision`` mean
+    what they mean in :func:`generate_report`; the returned session's
+    ``generate_report`` takes the remaining options. ``cache_chunk_size`` grows the
+    KV cache in multiples of 256 tokens (0 concatenates); ``reuse_prefix`` reuses a
+    prefill snapshot for exact prompt matches. Close the session, or use it as a
+    context manager, to release the model.
+    """
+    from mlx_reason_ct.api import CTSession
+
+    return CTSession(
+        image_path=image_path, weights_path=weights_path, anatomy_region=anatomy_region,
+        precision=precision, cache_chunk_size=cache_chunk_size, reuse_prefix=reuse_prefix,
+    )

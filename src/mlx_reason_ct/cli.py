@@ -10,7 +10,7 @@ from importlib import import_module
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from mlx_reason_ct.api import PRECISION_PROFILES, generate_report
+from mlx_reason_ct.api import PRECISION_PROFILES, write_report
 from mlx_reason_ct.errors import InvalidInputError
 from mlx_reason_ct.mlx_weights import MANIFEST, RUNTIME_FILES, SHARDS, read_manifest
 from mlx_reason_ct.response import write_private_text
@@ -88,7 +88,7 @@ def main() -> int:
                 Sequence[tuple[str, str]],
                 json.loads(args.history.read_text(encoding="utf-8")),
             )
-        result = generate_report(
+        result = write_report(
             args.input,
             args.output_dir,
             model_dir=args.model_dir,
