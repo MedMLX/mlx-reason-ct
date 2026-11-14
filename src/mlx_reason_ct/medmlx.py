@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from os import PathLike
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 from medmlx_core.errors import (
     AssetNotReadyError,
@@ -13,6 +13,7 @@ from medmlx_core.errors import (
     MissingDependencyError,
     ModelExecutionError,
 )
+from medmlx_core.outputs import artifact
 from medmlx_core.weights import weights_dir
 
 from mlx_reason_ct._payloads import JsonValue
@@ -38,10 +39,10 @@ def run(
     output_dir: str | PathLike[str],
     overwrite: bool = False,
     prompt: str | None = None,
-    anatomy_region: str | None = "chest",
+    anatomy_region: Literal["chest", "abdomen"] | None = "chest",
     enable_thinking: bool = False,
     max_new_tokens: int = 512,
-    precision: str = "bfloat16_fast",
+    precision: Literal["bfloat16_fast", "bfloat16"] = "bfloat16_fast",
     history: Sequence[tuple[str, str]] | None = None,
     tools: Sequence[Mapping[str, JsonValue]] | None = None,
     tool_history: Sequence[Mapping[str, str]] | None = None,
@@ -98,8 +99,11 @@ def run(
             the ``tools`` extra and thinking disabled.
 
     Returns:
-        ``{"outputs": {"report", "response", "run"}, "details": ...}``: absolute
-        POSIX file paths and the ``run.json`` record.
+        ``{"outputs": {"report", "response", "run"}, "artifacts": ..., "details": ...}``:
+        absolute POSIX file paths, a ``report`` artifact for each file (all
+        ``not_applicable`` coordinate space), and the ``run.json`` record with the
+        text of ``report.txt`` added as ``details["report"]``. That text is the
+        answer without reasoning or a trailing empty ``<answer></answer>``.
 
     Raises:
         InvalidInputError: ``image_path`` is not an existing ``.nii``/``.nii.gz``
@@ -163,4 +167,11 @@ def run(
         raise ModelExecutionError(
             f"NV-Reason-CT generation failed: {error}; check output permissions and Metal memory.",
         ) from error
-    return {"outputs": files.outputs(), "details": details}
+    outputs = files.outputs()
+    details["report"] = Path(outputs["report"]).read_text(encoding="utf-8").removesuffix("\n")
+    artifacts = {
+        "report": artifact(kind="report", coordinate_space="not_applicable"),
+        "response": artifact(kind="report", coordinate_space="not_applicable"),
+        "run": artifact(kind="report", coordinate_space="not_applicable"),
+    }
+    return {"outputs": outputs, "artifacts": artifacts, "details": details}

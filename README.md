@@ -97,7 +97,9 @@ present; it does not read their contents. `report` takes:
 | `run.json` | Geometry, source details, precision, runtime and completion status |
 
 JSON records carry `schema_version=1`. `run` accepts keyword arguments only and returns
-`outputs` (`report`, `response`, `run`) as absolute paths with JSON-compatible `details`.
+`outputs` (`report`, `response`, `run`) as absolute paths, an `artifacts` entry for each,
+and the `run.json` record as `details`, with the text of `report.txt` added as
+`details["report"]`.
 Existing outputs need `overwrite=True`. An empty or truncated response keeps the partial
 files with `status: failed` and raises; raise `max_new_tokens` and retry.
 
