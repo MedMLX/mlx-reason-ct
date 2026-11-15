@@ -6,9 +6,9 @@ from typing import TYPE_CHECKING
 __version__ = "0.6.0"
 
 if TYPE_CHECKING:
-    from mlx_reason_ct.medmlx import generate_report, load_model
+    from mlx_reason_ct.medmlx import load_model, run
 
-__all__ = ["generate_report", "load_model"]
+__all__ = ["run", "load_model"]
 
 
 def __getattr__(name: str) -> object:

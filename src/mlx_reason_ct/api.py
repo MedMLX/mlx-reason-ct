@@ -534,8 +534,8 @@ class CTSession:
     """One CT encoded once, with the model kept loaded, for several reports or questions.
 
     The model loads and encodes the CT on the first call; its visual weights are
-    then released, so a session serves one CT. :meth:`generate_report` takes the
-    one-shot ``generate_report`` options that do not change the encoding; pass
+    then released, so a session serves one CT. :meth:`run` takes the
+    one-shot ``run`` options that do not change the encoding; pass
     earlier turns explicitly as ``history`` or ``tool_history``. Calls are
     serialized per session. A changed CT file is rejected. Closing releases the
     model and embeddings without changing process-wide MLX caches.
@@ -608,7 +608,7 @@ class CTSession:
             self._stamp = stamp
         return self._prepared
 
-    def generate_report(
+    def run(
         self,
         *,
         output_dir: PathLike,
@@ -621,7 +621,7 @@ class CTSession:
         response_choices: Sequence[str] | None = None,
         overwrite: bool = False,
     ) -> dict[str, object]:
-        """Write one report or answer for the session's CT; see ``generate_report``.
+        """Write one report or answer for the session's CT; see ``run``.
 
         Raises:
             RuntimeError: The session is closed.

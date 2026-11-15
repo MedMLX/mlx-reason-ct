@@ -111,8 +111,8 @@ def test_session_rejects_source_rewrite_with_preserved_size_and_mtime(
     monkeypatch.setattr(api, "_load_assets", load_assets)
     monkeypatch.setattr(api, "_load_model", load_model)
     with api.CTSession(image_path=source, weights_path=model_dir, anatomy_region=None) as session:
-        session.generate_report(output_dir=tmp_path / "first", max_new_tokens=2)
-        session.generate_report(output_dir=tmp_path / "unchanged", max_new_tokens=2)
+        session.run(output_dir=tmp_path / "first", max_new_tokens=2)
+        session.run(output_dir=tmp_path / "unchanged", max_new_tokens=2)
         original = source.stat()
         write_ct(source, changed=True)
         os.utime(source, ns=(original.st_atime_ns, original.st_mtime_ns))
@@ -123,7 +123,7 @@ def test_session_rejects_source_rewrite_with_preserved_size_and_mtime(
             original.st_mtime_ns,
         )
         with pytest.raises(InvalidInputError, match="CT file changed"):
-            session.generate_report(output_dir=tmp_path / "changed", max_new_tokens=2)
+            session.run(output_dir=tmp_path / "changed", max_new_tokens=2)
 
 
 @pytest.mark.parametrize("preexisting", [False, True])
@@ -158,7 +158,7 @@ def test_session_restores_report_set_when_run_record_write_fails(
     monkeypatch.setattr(api, "write_private_text", fail_run)
     with api.CTSession(image_path=source, weights_path=model_dir, anatomy_region=None) as session:
         with pytest.raises(OSError, match="injected run record failure"):
-            session.generate_report(output_dir=output_dir, max_new_tokens=2, overwrite=True)
+            session.run(output_dir=output_dir, max_new_tokens=2, overwrite=True)
 
     for path in paths:
         if preexisting:
@@ -186,7 +186,7 @@ def test_session_keeps_failed_run_records_for_incomplete_generation(
     output_dir = tmp_path / "report"
     with api.CTSession(image_path=source, weights_path=model_dir, anatomy_region=None) as session:
         with pytest.raises(ModelExecutionError, match="incomplete response"):
-            session.generate_report(output_dir=output_dir, max_new_tokens=1)
+            session.run(output_dir=output_dir, max_new_tokens=1)
 
     assert (output_dir / "report.txt").read_text(encoding="utf-8") == "finding\n"
     assert (output_dir / "model_response.json").is_file()
@@ -218,7 +218,7 @@ def test_session_does_not_publish_a_report_if_source_changes_during_generation(
     output_dir = tmp_path / "report"
     with api.CTSession(image_path=source, weights_path=model_dir, anatomy_region=None) as session:
         with pytest.raises(InvalidInputError, match="CT file changed"):
-            session.generate_report(output_dir=output_dir, max_new_tokens=2)
+            session.run(output_dir=output_dir, max_new_tokens=2)
     assert not (output_dir / "run.json").exists()
 
 

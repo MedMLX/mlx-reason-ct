@@ -1,4 +1,4 @@
-"""generate_report checks its arguments before any weight download."""
+"""run checks its arguments before any weight download."""
 
 from collections.abc import Callable
 from pathlib import Path
@@ -43,7 +43,7 @@ from mlx_reason_ct.errors import InvalidInputError
         "tool-history",
     ],
 )
-def test_generate_report_rejects_invalid_inputs_before_downloading(
+def test_run_rejects_invalid_inputs_before_downloading(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, options: dict[str, object]
 ) -> None:
     """Refuse each category of bad argument without starting the 17 GB download."""
@@ -63,12 +63,12 @@ def test_generate_report_rejects_invalid_inputs_before_downloading(
             value = tmp_path / value
         arguments[key] = value
     # Invalid argument types are the point of this test, so call without static checks.
-    generate_report = cast(Callable[..., object], medmlx.generate_report)
+    run = cast(Callable[..., object], medmlx.run)
     with pytest.raises(InvalidInputError):
-        generate_report(**arguments)
+        run(**arguments)
 
 
-def test_generate_report_returns_report_text_and_artifacts(
+def test_run_returns_report_text_and_artifacts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The result carries the report text and describes all three files as reports."""
@@ -83,7 +83,7 @@ def test_generate_report_returns_report_text_and_artifacts(
         return {"status": "succeeded"}
 
     monkeypatch.setattr(api, "write_report", generate)
-    result = medmlx.generate_report(
+    result = medmlx.run(
         image_path=image, weights_path=bundle, output_dir=tmp_path / "out"
     )
 

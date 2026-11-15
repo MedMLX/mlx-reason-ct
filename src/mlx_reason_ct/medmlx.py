@@ -25,7 +25,7 @@ MODEL: dict[str, str | float] = {
     "id": "mlx-reason-ct",
     "label": "NV-Reason-CT",
     "task": "report-generation",
-    "run": "mlx_reason_ct.medmlx:generate_report",
+    "run": "mlx_reason_ct.medmlx:run",
     "summary": "CT reporting and question answering with NV-Reason-CT on Metal; BF16 weights.",
     # Measured MLX peaks: 12.19 GB for bfloat16_fast chest and abdominal reports,
     # 12.46 GB for source bfloat16. The model resamples every scan to one grid, so
@@ -37,7 +37,7 @@ type Region = Literal["chest", "abdomen"] | None
 type Precision = Literal["bfloat16_fast", "bfloat16"]
 
 
-def generate_report(
+def run(
     *,
     image_path: PathLike,
     output_dir: PathLike,
@@ -175,8 +175,8 @@ def load_model(
     The CT is encoded once and the visual weights are then released, which keeps
     the peak at the one-shot level, so a session serves the one CT it was loaded
     for. ``image_path``, ``weights_path``, ``anatomy_region`` and ``precision`` mean
-    what they mean in :func:`generate_report`; the returned session's
-    ``generate_report`` takes the remaining options. ``cache_chunk_size`` grows the
+    what they mean in :func:`run`; the returned session's
+    ``run`` takes the remaining options. ``cache_chunk_size`` grows the
     KV cache in multiples of 256 tokens (0 concatenates); ``reuse_prefix`` reuses a
     prefill snapshot for exact prompt matches. Close the session, or use it as a
     context manager, to release the model.

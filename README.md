@@ -36,9 +36,9 @@ uv pip install "mlx-reason-ct>=0.6.0"
 ## Run
 
 ```python
-from mlx_reason_ct import generate_report
+from mlx_reason_ct import run
 
-result = generate_report(image_path="ct.nii.gz", output_dir="outputs")
+result = run(image_path="ct.nii.gz", output_dir="outputs")
 print(result["details"]["report"])
 ```
 
@@ -96,7 +96,7 @@ present; it does not read their contents. `report` takes:
 | `response` | `model_response.json` | The answer, generation metrics and, with thinking on, `thinking` |
 | `metadata` | `run.json` | Geometry, source details, precision, runtime and completion status |
 
-JSON records carry `schema_version=1`. `generate_report` accepts keyword arguments only
+JSON records carry `schema_version=1`. `run` accepts keyword arguments only
 and returns `outputs` by role as absolute paths, an `artifacts` entry for each, and the
 `run.json` record as `details`, with the text of `report.txt` added as `details["report"]`.
 Existing outputs need `overwrite=True`. An empty or truncated response keeps the partial
@@ -126,9 +126,9 @@ Decoding is greedy. Inference requires Apple Silicon with Metal.
 from mlx_reason_ct import load_model
 
 with load_model(image_path="ct.nii.gz", anatomy_region="abdomen") as session:
-    first = session.generate_report(output_dir="out/first")
+    first = session.run(output_dir="out/first")
     question = "Describe the liver findings."
-    followup = session.generate_report(
+    followup = session.run(
         output_dir="out/followup",
         prompt=question,
         history=[("Write a structured abdominal CT report.", first["details"]["report"])],
@@ -137,7 +137,7 @@ with load_model(image_path="ct.nii.gz", anatomy_region="abdomen") as session:
 
 `load_model` loads the model and encodes the CT on the first call, then releases the
 visual weights, so a session serves one CT at the one-shot peak memory. Its
-`generate_report` takes the per-call options (`prompt`, `history`, `tools`,
+`run` takes the per-call options (`prompt`, `history`, `tools`,
 `tool_history`, `response_choices`, `enable_thinking`, `max_new_tokens`, `overwrite`);
 `history` is a sequence of already-answered `(question, answer)` pairs, oldest first.
 
