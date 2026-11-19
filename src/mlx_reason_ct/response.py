@@ -12,7 +12,9 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+from mlx_reason_ct._payloads import JsonValue
 from mlx_reason_ct.errors import InvalidInputError, ModelExecutionError
+from mlx_reason_ct.tool_calls import ToolCallError, parse_tool_calls
 
 THINK_END = "</think>"
 
@@ -128,6 +130,7 @@ def save_response(
     *,
     overwrite: bool = False,
     literal: bool = False,
+    tools: Sequence[Mapping[str, JsonValue]] = (),
 ) -> dict[str, str]:
     """Write ``report.txt`` and ``model_response.json`` from decoded model text.
 
@@ -135,8 +138,15 @@ def save_response(
     trailing empty ``<answer></answer>`` element is removed from the answer.
     With ``literal=True``, preserve the decoded constrained choice without that
     markup cleanup.
+    A report or analysis ends with the checkpoint's finding labels as
+    ``<answer> label, label </answer>``; that text stays in the answer and the
+    record also lists them as ``labels``.
     ``metrics`` is stored under ``generation`` and must contain
     ``terminated_by_eos``. The JSON record always sets ``requires_human_review``.
+    With ``tools``, the record also holds ``tool_calls``: the answer's function
+    requests checked against those declarations, empty when it answered in prose.
+    Markup that does not parse or breaks a declaration leaves ``tool_calls`` empty
+    and sets ``tool_call_error``; the answer text is kept either way.
 
     Returns:
         The ``report`` and ``response`` paths.
@@ -154,6 +164,14 @@ def save_response(
     record: dict[str, object] = {"schema_version": 1, "report": report}
     if thinking is not None:
         record["thinking"] = thinking
+    labels = None if literal else re.search(r"<answer>([^<]*)</answer>\s*$", report)
+    if labels is not None:
+        record["labels"] = [label.strip() for label in labels[1].split(",") if label.strip()]
+    if tools:
+        try:
+            record["tool_calls"] = parse_tool_calls(report, tools)[1]
+        except ToolCallError as error:
+            record.update(tool_calls=[], tool_call_error=str(error))
     record.update(requires_human_review=True, generation=metrics)
     response_content = json.dumps(record, indent=2) + "\n"
     complete = bool(report.strip()) and bool(metrics["terminated_by_eos"])

@@ -35,6 +35,7 @@ MODEL: dict[str, str | float] = {
 
 type Region = Literal["chest", "abdomen"] | None
 type Precision = Literal["bfloat16_fast", "bfloat16"]
+type PrefillReuse = Literal["exact", "fast"]
 
 
 def run(
@@ -45,12 +46,13 @@ def run(
     prompt: str | None = None,
     anatomy_region: Region = "chest",
     enable_thinking: bool = False,
-    max_new_tokens: int = 512,
+    max_new_tokens: int = 1024,
     precision: Precision = "bfloat16_fast",
     history: Sequence[tuple[str, str]] | None = None,
     tools: Sequence[Mapping[str, JsonValue]] | None = None,
     tool_history: Sequence[Mapping[str, str]] | None = None,
     response_choices: Sequence[str] | None = None,
+    tool_choice: Literal["required"] | None = None,
     overwrite: bool = False,
 ) -> dict[str, object]:
     """Generate a report from one scalar 3D HU NIfTI CT on Apple Silicon Metal.
@@ -78,7 +80,11 @@ def run(
     ``tools`` passes function schemas to the checkpoint's native chat template.
     ``tool_history`` is alternating assistant/tool text turns, ending with a
     tool response, after the opening ``prompt``; it is exclusive with ``history``.
-    Tool requests are returned as text and never executed by this provider.
+    Tool requests are never executed by this provider. The checkpoint does not
+    request a tool unprompted, so ask for one with ``tool_choice="required"``,
+    which constrains the answer to one call of a declared tool, or list the
+    permitted calls yourself as ``response_choices``. With ``tools``, the result's
+    ``details["tool_calls"]`` holds the requested calls as names and arguments.
     ``response_choices`` constrains decoding to one explicit string with
     LLGuidance; install the ``tools`` extra and leave thinking disabled.
 
@@ -102,13 +108,29 @@ def run(
             with a tool response and cannot be combined with ``history``.
         response_choices: Explicit output strings enforced with LLGuidance. Requires
             the ``tools`` extra and thinking disabled.
+            ``details["generation"]["choice_probabilities"]`` gives the model's
+            probability of each when its first decision settles the choice, as it
+            does for ``Yes``/``No``; ``choice_probability`` is that of the selected
+            token path and is always present.
+        tool_choice: ``"required"`` constrains the answer to one call of a declared
+            tool. Each required parameter needs an ``enum`` (or the boolean type) and
+            optional parameters are left out; for other values, such as IDs a tool
+            returned, list the calls as ``response_choices`` instead. Same
+            requirements as ``response_choices``, which it cannot be combined with.
 
     Returns:
         ``{"outputs": {"report", "response", "metadata"}, "artifacts": ..., "details": ...}``:
         absolute POSIX paths of ``report.txt``, ``model_response.json`` and ``run.json``,
         a ``report`` artifact for each (``not_applicable`` coordinate space), and the
-        ``run.json`` record with the text of ``report.txt`` added as ``details["report"]``.
-        That text is the answer without reasoning or a trailing empty ``<answer></answer>``.
+        ``run.json`` record with the answer fields of ``model_response.json`` added:
+        ``details["report"]``, the answer without reasoning or a trailing empty
+        ``<answer></answer>``; ``details["thinking"]`` with thinking enabled;
+        ``details["labels"]``, the finding labels a report or analysis ends with as
+        ``<answer> label, label </answer>``, as a list; and, with ``tools``,
+        ``details["tool_calls"]``, a list of ``{"name", "arguments"}`` checked
+        against the declarations and empty for a prose answer.
+        ``details["tool_call_error"]`` is set, and the list empty, when the answer
+        holds tool-call markup that is malformed or breaks a declaration.
 
     Raises:
         InvalidInputError: ``image_path`` is not an existing ``.nii``/``.nii.gz``
@@ -126,6 +148,7 @@ def run(
     validate_generation_options(
         prompt, anatomy_region, enable_thinking, max_new_tokens, overwrite, precision, history,
         tools=tools, tool_history=tool_history, response_choices=response_choices,
+        tool_choice=tool_choice,
     )
     files = ReportFiles(Path(output_dir).expanduser().resolve())
     files.require_writable(overwrite=overwrite)
@@ -147,6 +170,7 @@ def run(
             tools=tools,
             tool_history=tool_history,
             response_choices=response_choices,
+            tool_choice=tool_choice,
         )
     except (InvalidInputError, AssetNotReadyError, MissingDependencyError, ModelExecutionError):
         raise
@@ -168,7 +192,7 @@ def load_model(
     anatomy_region: Region = "chest",
     precision: Precision = "bfloat16_fast",
     cache_chunk_size: int = 256,
-    reuse_prefix: bool = False,
+    prefill_reuse: PrefillReuse = "exact",
 ) -> CTSession:
     """Load NV-Reason-CT for several reports or questions about one CT.
 
@@ -177,13 +201,20 @@ def load_model(
     for. ``image_path``, ``weights_path``, ``anatomy_region`` and ``precision`` mean
     what they mean in :func:`run`; the returned session's
     ``run`` takes the remaining options. ``cache_chunk_size`` grows the
-    KV cache in multiples of 256 tokens (0 concatenates); ``reuse_prefix`` reuses a
-    prefill snapshot for exact prompt matches. Close the session, or use it as a
-    context manager, to release the model.
+    KV cache in multiples of 256 tokens (0 concatenates).
+
+    After its first call, a ``bfloat16_fast`` session decodes only the end of each
+    prompt and reuses the state of the tokens before it. ``prefill_reuse="exact"``
+    (default) decodes the last 2,561 to 4,608 CT tokens again with the question and
+    reproduces the logits of a whole prefill; ``"fast"`` decodes a few dozen tokens
+    with the question, and its logits differ at rounding level: suited to
+    constrained choices and tool calls, while the wording of a long free-text
+    answer can diverge. The ``bfloat16`` profile always prefills the whole prompt.
+    Close the session, or use it as a context manager, to release the model.
     """
     from mlx_reason_ct.api import CTSession
 
     return CTSession(
         image_path=image_path, weights_path=weights_path, anatomy_region=anatomy_region,
-        precision=precision, cache_chunk_size=cache_chunk_size, reuse_prefix=reuse_prefix,
+        precision=precision, cache_chunk_size=cache_chunk_size, prefill_reuse=prefill_reuse,
     )

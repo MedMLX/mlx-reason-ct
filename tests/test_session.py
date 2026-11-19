@@ -15,10 +15,11 @@ from mlx_reason_ct._host_types import Nibabel
 from mlx_reason_ct._native_types import Array
 from mlx_reason_ct.ct_crop import CTCrop
 from mlx_reason_ct.errors import InvalidInputError, ModelExecutionError
+from mlx_reason_ct.generation_state import PromptPrefix
 from mlx_reason_ct.mlx_model import DecoderCache
 from mlx_reason_ct.mlx_weights import SHARDS
 from mlx_reason_ct.nifti import load_ct
-from mlx_reason_ct.processor_mlx import VolumePrompt
+from mlx_reason_ct.processor_mlx import VolumePrompt, volume_positions
 from mlx_reason_ct.runtime import import_mlx
 
 mx = import_mlx()
@@ -306,3 +307,67 @@ def test_constrained_report_preserves_the_literal_selected_choice(
     assert (output_dir / "report.txt").read_text() == choice + "\n"
     response = json.loads((output_dir / "model_response.json").read_text())
     assert response["report"] == choice
+
+
+class RunningModel:
+    """A decoder stand-in whose every output depends on all earlier tokens and positions."""
+
+    eos_ids = (0,)
+
+    def embed(self, ids: Array) -> Array:
+        return mx.array(np.asarray(ids, dtype=np.float32)[..., None])
+
+    def decode(
+        self, embeddings: Array, positions: Array, cache: DecoderCache | None = None
+    ) -> tuple[Array, DecoderCache]:
+        if cache is None:
+            cache = DecoderCache()
+        carried = np.zeros((1, 1))
+        if cache.layers[0]:
+            carried = np.asarray(cache.layers[0]["sum"], dtype=np.float64)
+        values = np.asarray(embeddings, dtype=np.float64)[..., 0] * (
+            np.asarray(positions, dtype=np.float64)[0] + 1
+        )
+        running = carried + np.cumsum(values, axis=1)
+        cache.layers[0]["sum"] = mx.array(running[:, -1:].astype(np.float32))
+        cache.offset += embeddings.shape[1]
+        return mx.array(running[..., None].astype(np.float32)), cache
+
+    def logits(self, hidden: Array) -> Array:
+        scores = np.zeros((1, 1, 8), dtype=np.float32)
+        scores[0, 0, int(np.asarray(hidden)[0, -1, 0]) % 8] = 1.0
+        return mx.array(scores)
+
+
+def ct_prompt(before: list[int], after: list[int]) -> VolumePrompt:
+    """Text tokens around one 17-cubed CT placeholder run (token 9)."""
+    ids = np.array(before + [9] * 4913 + after, dtype=np.int64)
+    positions, delta, start = volume_positions(ids, 9, (17, 17, 17))
+    return VolumePrompt(
+        "", ids[None], positions, np.ones_like(ids)[None], (ids == 9).astype(np.int64)[None],
+        delta, start,
+    )
+
+
+@pytest.mark.parametrize("fast", [False, True])
+def test_kept_prefill_serves_only_prompts_that_start_with_its_tokens(fast: bool) -> None:
+    """A later question must decode as if its whole prompt had been prefilled."""
+    embeddings = mx.array(np.full((1, 4913, 1), 3.0, dtype=np.float32))
+    prefix = PromptPrefix(fast=fast)
+    prompts = [
+        ct_prompt([1, 2, 3], [4, 5, 6]),
+        ct_prompt([1, 2, 3], [6, 5, 4, 3]),
+        # Another tool block changes the tokens before the CT.
+        ct_prompt([2, 2, 3], [4, 5, 6]),
+        ct_prompt([2, 2, 3], [7, 7]),
+    ]
+    reused: list[object] = []
+    for inputs in prompts:
+        whole, _ = api.generate(RunningModel(), inputs, embeddings, max_new_tokens=6)
+        tokens, metrics = api.generate(
+            RunningModel(), inputs, embeddings, max_new_tokens=6, prefix=prefix
+        )
+        assert tokens == whole
+        reused.append(metrics["reused_prefix_tokens"])
+    assert reused[0] == 0 and reused[2] == 0
+    assert reused[1] == reused[3] and cast(int, reused[1]) > 0

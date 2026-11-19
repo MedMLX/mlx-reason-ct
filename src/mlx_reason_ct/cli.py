@@ -5,12 +5,14 @@ from __future__ import annotations
 import argparse
 import json
 import re
-from collections.abc import Sequence
+import sys
+from collections.abc import Mapping, Sequence
 from importlib import import_module
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from mlx_reason_ct.api import PRECISION_PROFILES, write_report
+from mlx_reason_ct._payloads import JsonValue
+from mlx_reason_ct.api import PRECISION_PROFILES, CTSession, write_report
 from mlx_reason_ct.errors import InvalidInputError
 from mlx_reason_ct.mlx_weights import MANIFEST, RUNTIME_FILES, SHARDS, read_manifest
 from mlx_reason_ct.response import write_private_text
@@ -24,7 +26,7 @@ _REVISION_FILE = ".medmlx-revision"
 
 
 def main() -> int:
-    """Run the selected download, verify or report subcommand; return the exit status."""
+    """Run the selected download, verify, report or chat subcommand; return the exit status."""
     parser = argparse.ArgumentParser(prog="mlx-reason-ct", description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     download = commands.add_parser("download", help="Download the FP32 bundle")
@@ -40,28 +42,59 @@ def main() -> int:
     )
     verify.add_argument("--model-dir", type=Path, required=True)
     report = commands.add_parser("report", help="Generate a report from one local HU NIfTI CT")
-    report.add_argument("--input", type=Path, required=True)
-    report.add_argument("--model-dir", type=Path, required=True)
-    report.add_argument("--output-dir", type=Path, required=True)
-    report.add_argument(
-        "--anatomy-region",
-        choices=["chest", "abdomen", "none"],
-        default="chest",
-        help="'none' uses the pinned processor's own centered crop, with no "
-        "chest/abdomen lung detection",
+    chat = commands.add_parser(
+        "chat", help="Ask several questions about one CT; the model stays loaded"
     )
+    for command in (report, chat):
+        command.add_argument("--input", type=Path, required=True)
+        command.add_argument("--model-dir", type=Path, required=True)
+        command.add_argument("--output-dir", type=Path, required=True)
+        command.add_argument(
+            "--anatomy-region",
+            choices=["chest", "abdomen", "none"],
+            default="chest",
+            help="'none' uses the pinned processor's own centered crop, with no "
+            "chest/abdomen lung detection",
+        )
+        command.add_argument("--enable-thinking", action="store_true")
+        command.add_argument("--max-new-tokens", type=int, default=1024)
+        command.add_argument(
+            "--precision", choices=tuple(PRECISION_PROFILES), default="bfloat16_fast"
+        )
+        command.add_argument(
+            "--overwrite", action="store_true", help="Replace existing report files"
+        )
     report.add_argument(
         "--prompt", help="Question or instruction (default: structured report for the region)"
     )
-    report.add_argument("--enable-thinking", action="store_true")
-    report.add_argument("--max-new-tokens", type=int, default=512)
-    report.add_argument("--precision", choices=tuple(PRECISION_PROFILES), default="bfloat16_fast")
-    report.add_argument("--overwrite", action="store_true", help="Replace existing report files")
     report.add_argument(
         "--history",
         type=Path,
         help="JSON file holding a list of already-answered [question, answer] "
         "turns, oldest first, to continue a conversation about the same CT",
+    )
+    report.add_argument("--tools", type=Path, help="JSON file holding a list of function schemas")
+    report.add_argument(
+        "--tool-history",
+        type=Path,
+        help="JSON file holding alternating assistant/tool turns as {role, content} "
+        "objects, ending with a tool result",
+    )
+    report.add_argument(
+        "--tool-choice",
+        choices=["required"],
+        help="Constrain the answer to one call of a tool from --tools",
+    )
+    report.add_argument(
+        "--response-choice",
+        action="append",
+        help="A complete permitted answer; repeat to let the model choose among several",
+    )
+    chat.add_argument(
+        "--prefill-reuse",
+        choices=["exact", "fast"],
+        default="exact",
+        help="'fast' answers follow-up questions sooner; its logits differ at rounding level",
     )
     args = parser.parse_args()
     if args.command == "download":
@@ -79,15 +112,12 @@ def main() -> int:
                 }
             )
         )
+    elif args.command == "chat":
+        _chat(args)
     else:
-        history: Sequence[tuple[str, str]] | None = None
-        if args.history is not None:
-            # Preserve untrusted JSON for the API's history validator. Stringifying
-            # entries would turn malformed values into plausible conversation text.
-            history = cast(
-                Sequence[tuple[str, str]],
-                json.loads(args.history.read_text(encoding="utf-8")),
-            )
+        # Preserve untrusted JSON for the API's validators. Stringifying entries
+        # would turn malformed values into plausible conversation text.
+        history = cast("Sequence[tuple[str, str]] | None", _json_file(args.history))
         result = write_report(
             args.input,
             args.output_dir,
@@ -98,10 +128,59 @@ def main() -> int:
             max_new_tokens=args.max_new_tokens,
             precision=args.precision,
             history=history,
+            tools=cast("Sequence[Mapping[str, JsonValue]] | None", _json_file(args.tools)),
+            tool_history=cast(
+                "Sequence[Mapping[str, str]] | None", _json_file(args.tool_history)
+            ),
+            response_choices=args.response_choice,
+            tool_choice=args.tool_choice,
             overwrite=args.overwrite,
         )
         print(json.dumps(result, indent=2))
     return 0
+
+
+def _json_file(path: Path | None) -> object:
+    return None if path is None else json.loads(path.read_text(encoding="utf-8"))
+
+
+def _chat(args: argparse.Namespace) -> None:
+    """Answer each line of standard input about one CT until an empty line or end of input.
+
+    Earlier questions and answers are replayed with each new one, so follow-ups can
+    refer back. Turn ``N`` writes its files to ``turn-NNN`` under the output folder.
+    """
+    interactive = sys.stdin.isatty()
+    if interactive:
+        print("Ask about the CT. An empty line or Ctrl-D ends the conversation.")
+    history: list[tuple[str, str]] = []
+    with CTSession(
+        image_path=args.input,
+        weights_path=args.model_dir,
+        anatomy_region=None if args.anatomy_region == "none" else args.anatomy_region,
+        precision=args.precision,
+        prefill_reuse=args.prefill_reuse,
+    ) as session:
+        while True:
+            if interactive:
+                print("> ", end="", flush=True)
+            question = sys.stdin.readline().strip()
+            if not question:
+                break
+            result = session.run(
+                output_dir=args.output_dir / f"turn-{len(history) + 1:03d}",
+                prompt=question,
+                history=history,
+                enable_thinking=args.enable_thinking,
+                max_new_tokens=args.max_new_tokens,
+                overwrite=args.overwrite,
+            )
+            details = cast(dict[str, object], result["details"])
+            answer = cast(str, details["report"])
+            if "thinking" in details:
+                print(f"[thinking] {details['thinking']}\n")
+            print(answer, flush=True)
+            history.append((question, answer))
 
 
 def _commit(value: str) -> str:

@@ -128,6 +128,7 @@ def chunk_delta(
     state: Array,
     *,
     source_bfloat16: bool = False,
+    prior_tokens: int = 0,
 ) -> tuple[Array, Array]:
     """Run the chunked gated-delta recurrence over ``T`` tokens in 64-token chunks.
 
@@ -139,6 +140,10 @@ def chunk_delta(
         beta: write strength, ``(B, T, Hv)``.
         state: recurrent state ``(B, Hv, V, K)`` (MLX-LM's V, K order).
         source_bfloat16: use the source-BF16 exponential and reduction kernels.
+        prior_tokens: tokens already folded into ``state`` by earlier calls. It only
+            selects the cumulative-sum partition, which the source derives from the
+            whole sequence's chunk count, so a continuation partitions as one call
+            over the whole sequence does.
 
     Returns:
         ``(output, state)``: float32 ``(B, T, Hv, 128)`` and the updated state in
@@ -153,6 +158,7 @@ def chunk_delta(
     exponential = source_arithmetic.exp if source_bfloat16 else mx.exp
     batch, length, heads, _ = v.shape
     count = (length + 63) // 64
+    logical_count = (prior_tokens + length + 63) // 64
     repeat = heads // q.shape[2]
     lower = mx.arange(64)[:, None] >= mx.arange(64)[None, :]
 
@@ -173,7 +179,9 @@ def chunk_delta(
         bg = chunks(beta[..., None])
         # ATen chooses its scan partition using all logical rows, including the
         # tail group's rows. Keep that choice while materializing one group.
-        gg = source_cumsum(chunks(g[..., None])[..., 0], source_rows=batch * heads * count)
+        gg = source_cumsum(
+            chunks(g[..., None])[..., 0], source_rows=batch * heads * logical_count
+        )
         decay = mx.where(lower, exponential(mx.minimum(gg[..., :, None] - gg[..., None, :], 0)), 0)
         kb, vb = kg * bg, vg * bg
         attn = mx.where(

@@ -1,5 +1,6 @@
 """run checks its arguments before any weight download."""
 
+import json
 from collections.abc import Callable
 from pathlib import Path
 from typing import NoReturn, cast
@@ -10,6 +11,20 @@ from medmlx_core.outputs import validate_outputs
 
 from mlx_reason_ct import api, medmlx
 from mlx_reason_ct.errors import InvalidInputError
+
+#: A tool whose required argument has no enum, so its calls cannot be enumerated.
+OPEN_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "measure",
+        "description": "Measure a finding.",
+        "parameters": {
+            "type": "object",
+            "properties": {"finding": {"type": "string"}},
+            "required": ["finding"],
+        },
+    },
+}
 
 
 @pytest.mark.parametrize(
@@ -27,6 +42,9 @@ from mlx_reason_ct.errors import InvalidInputError
         {"tools": {}},
         {"tools": [{"type": "invalid"}]},
         {"tool_history": [{"role": "assistant", "content": "call"}]},
+        {"tool_choice": "required"},
+        {"tools": [OPEN_TOOL], "tool_choice": "required"},
+        {"tools": [OPEN_TOOL], "tool_choice": "auto"},
     ],
     ids=[
         "suffix",
@@ -41,6 +59,9 @@ from mlx_reason_ct.errors import InvalidInputError
         "tools-mapping",
         "tool-schema",
         "tool-history",
+        "tool-choice-without-tools",
+        "tool-choice-open-parameter",
+        "tool-choice-value",
     ],
 )
 def test_run_rejects_invalid_inputs_before_downloading(
@@ -68,18 +89,26 @@ def test_run_rejects_invalid_inputs_before_downloading(
         run(**arguments)
 
 
-def test_run_returns_report_text_and_artifacts(
+def test_run_returns_answer_fields_and_artifacts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The result carries the report text and describes all three files as reports."""
+    """The result carries the written answer and describes all three files as reports."""
     image = tmp_path / "ct.nii.gz"
     image.write_bytes(b"unread")
     bundle = tmp_path / "bundle"
     bundle.mkdir()
+    answer: dict[str, object] = {
+        "schema_version": 1,
+        "report": "No acute finding.",
+        "thinking": "Lungs are clear.",
+        "tool_calls": [{"name": "detect_nodules", "arguments": {}}],
+        "requires_human_review": True,
+        "generation": {"terminated_by_eos": True},
+    }
 
     def generate(source: Path, output_dir: Path, **_: object) -> dict[str, object]:
         output_dir.mkdir()
-        (output_dir / "report.txt").write_text("No acute finding.\n", encoding="utf-8")
+        (output_dir / "model_response.json").write_text(json.dumps(answer), encoding="utf-8")
         return {"status": "succeeded"}
 
     monkeypatch.setattr(api, "write_report", generate)
@@ -91,4 +120,9 @@ def test_run_returns_report_text_and_artifacts(
     assert set(paths) == {"report", "response", "metadata"}
     assert {entry["kind"] for entry in artifacts.values()} == {"report"}
     assert {entry["coordinate_space"] for entry in artifacts.values()} == {"not_applicable"}
-    assert result["details"] == {"status": "succeeded", "report": "No acute finding."}
+    assert result["details"] == {
+        "status": "succeeded",
+        "report": "No acute finding.",
+        "thinking": "Lungs are clear.",
+        "tool_calls": [{"name": "detect_nodules", "arguments": {}}],
+    }

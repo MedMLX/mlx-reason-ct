@@ -523,13 +523,16 @@ class NativeModel:
         )
         return self.linear(h * self.sigmoid(mx.reshape(gate, (batch, length, -1))), p + ".o_proj")
 
-    def linear_attention(self, x: Array, p: str, state: dict[str, Array]) -> Array:
+    def linear_attention(
+        self, x: Array, p: str, state: dict[str, Array], *, prior_tokens: int = 0
+    ) -> Array:
         """Gated-delta linear attention (16 Q/K heads, 32 value heads, head dim 128).
 
         ``x`` is ``(B, T, 2560)``. ``state`` holds the layer's ``conv`` and
         ``recurrent`` entries (see ``DecoderCache``) and is updated in place. A
         sequence of more than one token uses the chunked prefill; a single token
-        uses the one-step recurrence kernel.
+        uses the one-step recurrence kernel. ``prior_tokens`` is the number of
+        tokens already in ``state``; see ``chunk_delta``.
         """
         batch, length, _ = x.shape
         source_bf16 = self.precision == "source_bfloat16"
@@ -586,6 +589,7 @@ class NativeModel:
                 beta,
                 recurrent,
                 source_bfloat16=source_bf16,
+                prior_tokens=prior_tokens,
             )
         else:
             recurrence = (
@@ -645,7 +649,9 @@ class NativeModel:
             # Every fourth layer uses full attention; the others use gated-delta
             # linear attention.
             if (i + 1) % 4:
-                h = self.linear_attention(h, p + ".linear_attn", cache.layers[i])
+                h = self.linear_attention(
+                    h, p + ".linear_attn", cache.layers[i], prior_tokens=cache.offset
+                )
             else:
                 h = self.full_attention(
                     h,
