@@ -40,7 +40,8 @@ class PromptPrefix:
     feed-forward runs in 2,048-row chunks, and the recurrence in 64-token chunks
     evaluated 16 at a time. The exact boundary is a multiple of 2,048 that leaves
     more than 2,560 tokens to decode, so every operation meets the kernel and
-    chunking of the whole prefill; on the M5 Max the logits are then bit-identical.
+    chunking of the whole prefill; on the M5 Max and the M1 Max the logits are then
+    bit-identical.
     The fast boundary is the last multiple of 64: the few remaining rows take the
     small-row kernels, whose products round differently in rare elements.
     """

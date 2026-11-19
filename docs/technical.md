@@ -88,8 +88,13 @@ Apple M5 Max, MLX 0.32.4:
 
   The first question after the declared tools change rebuilds the kept state
   and took 9.0–11.2 s in both modes.
-- Other Apple GPU generations dispatch matmuls differently, so bit-identity of
-  the exact mode is established for this GPU only.
+- Apple M1 Max (64 GB), MLX 0.32.4: the exact boundary was also bit-identical to
+  the one-call prefill, in the logits and the whole decoder cache, on 18 prompts
+  over two CTs (reports, yes/no questions, thinking, history, and tool blocks
+  that start the CT 260–1,891 tokens into the prompt; 3,445–4,063 tokens decoded
+  after the boundary). The reference CT gave the same 208-token report one-shot
+  and in an exact session. Bit-identity has not been checked on other Apple GPU
+  generations, which may dispatch matmuls differently.
 
 ## Constrained answers
 
