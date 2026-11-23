@@ -1,9 +1,9 @@
 """Native Metal Primus, multimodal projection and Qwen3.5 hybrid decoding.
 
 All learned arithmetic runs on Metal, and every learned weight is held as its
-exact BF16 value. The source_bfloat16 profile (public bfloat16) preserves
+exact BF16 value. The source_bfloat16 profile (public source-bf16) preserves
 NVIDIA's BF16 cast/cache boundaries. The bfloat16_matmul profile (public
-bfloat16_fast) runs multi-token projections as native BF16 matmuls with FP32
+fast-bf16) runs multi-token projections as native BF16 matmuls with FP32
 accumulation; its activations, norms, recurrence, attention and caches are FP32,
 and single-token steps and the LM head read the BF16 weights through
 ``bf16_gemv`` in FP32 arithmetic.

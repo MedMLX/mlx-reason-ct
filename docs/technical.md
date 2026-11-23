@@ -7,8 +7,8 @@ the published bundle stores them as FP32 only because it was converted that way.
 
 | Profile | CT encoding and prompt | Generated tokens |
 | :--- | :--- | :--- |
-| `bfloat16_fast` (default) | BF16 matmuls with FP32 accumulation, product rounded to BF16 | FP32 arithmetic on BF16 weights (`bf16_gemv`); FP32 norms, recurrence, attention and caches |
-| `bfloat16` | NVIDIA's BF16 casts and cache boundaries, reproduced by custom Metal kernels | Same source BF16 boundaries |
+| `fast-bf16` (default) | BF16 matmuls with FP32 accumulation, product rounded to BF16 | FP32 arithmetic on BF16 weights (`bf16_gemv`); FP32 norms, recurrence, attention and caches |
+| `source-bf16` | NVIDIA's BF16 casts and cache boundaries, reproduced by custom Metal kernels | Same source BF16 boundaries |
 
 Version 0.6.0 removed the `float32` and `bfloat16_fp32` profiles. They read the
 same BF16 weights; FP32 matmuls on the CT and prompt took about twice as long
@@ -20,7 +20,7 @@ Apple M5 Max (128 GB), MLX 0.32.4, LUNA16 chest CT
 `1.3.6.1.4.1.14519.5.2.1.6279.6001.105756658031515062000744821260`, default
 structured chest report (13,844 prompt tokens), greedy decoding.
 
-| Measurement | `float32` (0.4.x) | `bfloat16_fast` |
+| Measurement | `float32` (0.4.x) | `fast-bf16` |
 | :--- | ---: | ---: |
 | Prompt prefill, warm, 6 paired rounds | 11.89 s | 6.18 s |
 | Full report, `elapsed_s` (load, encode, prefill, 208 tokens) | 17.9 s | 12.4 s |
@@ -30,7 +30,7 @@ structured chest report (13,844 prompt tokens), greedy decoding.
 - An abdominal report (`anatomy_region="abdomen"`, whole-body CT, 321 tokens)
   peaked at 12.19 GB, the same as the chest report: every scan is resampled to
   one 192³ grid, so the peak does not grow with the input.
-- The source-exact `bfloat16` profile peaked at 12.46 GB; a three-token answer
+- The source-exact `source-bf16` profile peaked at 12.46 GB; a three-token answer
   took 380 s, almost all of it in its emulated prefill.
 - Generation runs at 21.3–21.6 ms per token at this context in both profiles,
   which share the decode path. Each token reads about 9.5 GB (7.2 GB of BF16
@@ -41,7 +41,7 @@ structured chest report (13,844 prompt tokens), greedy decoding.
 
 Every question about one CT repeats the whole prompt, and the tokens up to the end
 of the CT (13,824 image tokens, after any tool block) are the same each time. A
-`bfloat16_fast` session keeps the decoder state at a boundary inside those tokens
+`fast-bf16` session keeps the decoder state at a boundary inside those tokens
 and decodes only what follows it.
 
 | `prefill_reuse` | State kept at | Decoded again per question | Kept MLX memory |
@@ -127,7 +127,7 @@ argument token costs likelihood.
 
 ## Answers against ground truth
 
-Greedy decoding, thinking off, `bfloat16_fast`, exact session mode. Chest: 10
+Greedy decoding, thinking off, `fast-bf16`, exact session mode. Chest: 10
 LUNA16 CTs, 6 with a consensus nodule of 10–25 mm and 4 with no consensus nodule
 of 3 mm or more. Abdomen: 6 HCC-TACE-Seg patients with a segmented liver tumour
 (4–1,608 ml), each as a contrast-enhanced and an unenhanced series (liver

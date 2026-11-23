@@ -59,7 +59,7 @@ def main() -> int:
         command.add_argument("--enable-thinking", action="store_true")
         command.add_argument("--max-new-tokens", type=int, default=1024)
         command.add_argument(
-            "--precision", choices=tuple(PRECISION_PROFILES), default="bfloat16_fast"
+            "--precision", choices=tuple(PRECISION_PROFILES), default="fast-bf16"
         )
         command.add_argument(
             "--overwrite", action="store_true", help="Replace existing report files"

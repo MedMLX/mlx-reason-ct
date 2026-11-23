@@ -27,14 +27,14 @@ MODEL: dict[str, str | float] = {
     "task": "report-generation",
     "run": "mlx_reason_ct.medmlx:run",
     "summary": "CT reporting and question answering with NV-Reason-CT on Metal; BF16 weights.",
-    # Measured MLX peaks: 12.19 GB for bfloat16_fast chest and abdominal reports,
-    # 12.46 GB for source bfloat16. The model resamples every scan to one grid, so
+    # Measured MLX peaks: 12.19 GB for fast-bf16 chest and abdominal reports,
+    # 12.46 GB for source-bf16. The model resamples every scan to one grid, so
     # the peak does not grow with the input.
     "peak_memory_gb": 12.5,
 }
 
 type Region = Literal["chest", "abdomen"] | None
-type Precision = Literal["bfloat16_fast", "bfloat16"]
+type Precision = Literal["fast-bf16", "source-bf16"]
 type PrefillReuse = Literal["exact", "fast"]
 
 
@@ -47,7 +47,7 @@ def run(
     anatomy_region: Region = "chest",
     enable_thinking: bool = False,
     max_new_tokens: int = 1024,
-    precision: Precision = "bfloat16_fast",
+    precision: Precision = "fast-bf16",
     history: Sequence[tuple[str, str]] | None = None,
     tools: Sequence[Mapping[str, JsonValue]] | None = None,
     tool_history: Sequence[Mapping[str, str]] | None = None,
@@ -68,9 +68,9 @@ def run(
     ``anatomy_region`` (chest or abdomen) is requested. Pass ``anatomy_region=None``
     for the pinned processor's own centered crop, used upstream when the
     chest/abdomen heuristic is unreliable for a given scan. Generation is greedy.
-    ``precision`` selects bfloat16_fast (default; native BF16 matmuls with FP32
+    ``precision`` selects fast-bf16 (default; native BF16 matmuls with FP32
     accumulation for the CT and prompt, FP32 arithmetic and caches elsewhere) or
-    bfloat16 (the pinned source's BF16 cast and cache boundaries, reproduced
+    source-bf16 (the pinned source's BF16 cast and cache boundaries, reproduced
     step by step; slower).
     ``history`` continues a conversation about the same CT: already-answered
     ``(question, answer)`` turns, oldest first; ``prompt`` is the new, still-
@@ -99,8 +99,8 @@ def run(
         prompt: New question or instruction; None requests a structured regional report.
         anatomy_region: ``chest`` (default), ``abdomen``, or None for the source
             processor's centered crop without the regional heuristic.
-        precision: ``bfloat16_fast`` (default) with native BF16 matmuls and FP32
-            elsewhere, or ``bfloat16`` with source BF16 boundaries.
+        precision: ``fast-bf16`` (default) with native BF16 matmuls and FP32
+            elsewhere, or ``source-bf16`` with source BF16 boundaries.
         history: Already-answered user/assistant turns for this CT, oldest first.
         tools: Function schemas rendered by the checkpoint's chat template; tool
             requests are returned as text and are not executed by this provider.
@@ -190,7 +190,7 @@ def load_model(
     image_path: PathLike,
     weights_path: PathLike | None = None,
     anatomy_region: Region = "chest",
-    precision: Precision = "bfloat16_fast",
+    precision: Precision = "fast-bf16",
     cache_chunk_size: int = 256,
     prefill_reuse: PrefillReuse = "exact",
 ) -> CTSession:
@@ -203,13 +203,13 @@ def load_model(
     ``run`` takes the remaining options. ``cache_chunk_size`` grows the
     KV cache in multiples of 256 tokens (0 concatenates).
 
-    After its first call, a ``bfloat16_fast`` session decodes only the end of each
+    After its first call, a ``fast-bf16`` session decodes only the end of each
     prompt and reuses the state of the tokens before it. ``prefill_reuse="exact"``
     (default) decodes the last 2,561 to 4,608 CT tokens again with the question and
     reproduces the logits of a whole prefill; ``"fast"`` decodes a few dozen tokens
     with the question, and its logits differ at rounding level: suited to
     constrained choices and tool calls, while the wording of a long free-text
-    answer can diverge. The ``bfloat16`` profile always prefills the whole prompt.
+    answer can diverge. The ``source-bf16`` profile always prefills the whole prompt.
     Close the session, or use it as a context manager, to release the model.
     """
     from mlx_reason_ct.api import CTSession

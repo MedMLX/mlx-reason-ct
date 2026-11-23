@@ -44,8 +44,8 @@ DEFAULT_PROMPTS = {
 }
 
 PRECISION_PROFILES: dict[str, str] = {
-    "bfloat16_fast": "bfloat16_matmul",
-    "bfloat16": "source_bfloat16",
+    "fast-bf16": "bfloat16_matmul",
+    "source-bf16": "source_bfloat16",
 }
 
 
@@ -100,7 +100,7 @@ def validate_generation_options(
     """
     if not isinstance(cast(object, precision), str) or precision not in PRECISION_PROFILES:
         raise InvalidInputError(
-            "Unsupported NV-Reason-CT MLX precision profile; choose bfloat16_fast or bfloat16."
+            "Unsupported NV-Reason-CT MLX precision profile; choose fast-bf16 or source-bf16."
         )
     if anatomy_region is not None and (
         not isinstance(cast(object, anatomy_region), str)
@@ -203,7 +203,7 @@ def generate(
             boundary, and the first call's state is kept for later prompts that
             start with the same tokens and positions; a mismatch rebuilds it. See
             ``PromptPrefix`` for when the split repeats the one-call arithmetic,
-            which was established for the ``bfloat16_fast`` profile only.
+            which was established for the ``fast-bf16`` profile only.
         cache_chunk_size: Zero retains concatenating KV storage; a positive
             multiple of 256 allocates capacity in chunks, without token eviction.
         constraint: Optional request-owned LLGuidance choice constraint. Raw
@@ -365,7 +365,7 @@ def write_report(
     anatomy_region: str | None = "chest",
     enable_thinking: bool = False,
     max_new_tokens: int = 1024,
-    precision: str = "bfloat16_fast",
+    precision: str = "fast-bf16",
     overwrite: bool = False,
     history: Sequence[tuple[str, str]] | None = None,
     tools: Sequence[Mapping[str, JsonValue]] | None = None,
@@ -513,7 +513,7 @@ def _finish_report(
             "peak_mlx_memory_bytes": int(mx.get_peak_memory()),
             "precision": precision,
             "learned_weight_dtype": str(model.dtype),
-            "decoder_arithmetic": {"bfloat16": "bfloat16", "bfloat16_fast": "bfloat16_matmul"}[
+            "decoder_arithmetic": {"source-bf16": "bfloat16", "fast-bf16": "bfloat16_matmul"}[
                 precision
             ],
             "native_arithmetic_profile": native_profile,
@@ -618,7 +618,7 @@ class CTSession:
     ``cache_chunk_size`` grows KV storage in multiples of 256 tokens; zero selects
     the original concatenating cache.
 
-    With the ``bfloat16_fast`` profile the session keeps the decoder state of the
+    With the ``fast-bf16`` profile the session keeps the decoder state of the
     prompt tokens that every question shares (a tool block and most of the CT),
     0.7 to 1.0 GB, so each call after the first decodes only the rest of its prompt.
     ``prefill_reuse="exact"`` keeps the state at a 2,048-token boundary and decodes
@@ -629,7 +629,7 @@ class CTSession:
     constrained choice in the measured CTs, but the wording of a long free-text
     answer can diverge, including the session's first. See ``PromptPrefix``.
     Changing ``tools`` between calls changes the shared tokens and rebuilds the
-    state. The ``bfloat16`` profile always prefills the whole prompt.
+    state. The ``source-bf16`` profile always prefills the whole prompt.
     """
 
     def __init__(
@@ -638,7 +638,7 @@ class CTSession:
         image_path: PathLike,
         weights_path: PathLike | None = None,
         anatomy_region: str | None = "chest",
-        precision: str = "bfloat16_fast",
+        precision: str = "fast-bf16",
         cache_chunk_size: int = 256,
         prefill_reuse: str = "exact",
     ) -> None:
@@ -648,8 +648,8 @@ class CTSession:
         cache_capacity(0, cache_chunk_size)
         if prefill_reuse not in ("exact", "fast"):
             raise InvalidInputError('prefill_reuse must be "exact" or "fast"')
-        if prefill_reuse == "fast" and precision != "bfloat16_fast":
-            raise InvalidInputError('prefill_reuse="fast" requires precision="bfloat16_fast"')
+        if prefill_reuse == "fast" and precision != "fast-bf16":
+            raise InvalidInputError('prefill_reuse="fast" requires precision="fast-bf16"')
         self._model_dir = model_folder("mlx-reason-ct", weights_path)
         self._anatomy_region = anatomy_region
         self._precision = precision
@@ -657,9 +657,9 @@ class CTSession:
         self._prepared: _PreparedCT | None = None
         self._stamp: tuple[int, int, int, int, int] | None = None
         # The source profile's emulated kernels partition by the whole prompt's row
-        # count, so a split prefill was only established for bfloat16_fast.
+        # count, so a split prefill was only established for fast-bf16.
         self._prefix = (
-            PromptPrefix(fast=prefill_reuse == "fast") if precision == "bfloat16_fast" else None
+            PromptPrefix(fast=prefill_reuse == "fast") if precision == "fast-bf16" else None
         )
         self._closed = False
         self._lock = Lock()

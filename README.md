@@ -132,8 +132,8 @@ files with `status: failed` and raises; raise `max_new_tokens` and retry.
 
 | `precision` | Weights and arithmetic |
 | --- | --- |
-| `bfloat16_fast` (default) | BF16 matmuls with FP32 accumulation for the CT and prompt; FP32 arithmetic for generated tokens, the LM head, norms, recurrence, attention and caches |
-| `bfloat16` | NVIDIA's BF16 casts and cache boundaries, reproduced step by step; much slower |
+| `fast-bf16` (default) | BF16 matmuls with FP32 accumulation for the CT and prompt; FP32 arithmetic for generated tokens, the LM head, norms, recurrence, attention and caches |
+| `source-bf16` | NVIDIA's BF16 casts and cache boundaries, reproduced step by step; much slower |
 
 Both profiles use NVIDIA's BF16 weights unchanged. The published bundle stores them as
 FP32 without retraining.
