@@ -15,7 +15,7 @@ from mlx_reason_ct._payloads import JsonValue
 from mlx_reason_ct.api import PRECISION_PROFILES, CTSession, write_report
 from mlx_reason_ct.errors import InvalidInputError
 from mlx_reason_ct.mlx_weights import MANIFEST, RUNTIME_FILES, SHARDS, read_manifest
-from mlx_reason_ct.response import write_private_text
+from mlx_reason_ct.response import THINK_END, write_private_text
 
 if TYPE_CHECKING:
     from huggingface_hub import DryRunFileInfo
@@ -144,11 +144,51 @@ def _json_file(path: Path | None) -> object:
     return None if path is None else json.loads(path.read_text(encoding="utf-8"))
 
 
+_EMPTY_ANSWER = "<answer></answer>"
+
+
+def _shown(response: str, *, thinking: bool, complete: bool) -> str:
+    """Return what the chat prints for the raw ``response`` generated so far.
+
+    Reasoning is labelled and separated from the answer at ``</think>``. Trailing
+    whitespace, and a tail that can still become the empty ``<answer></answer>``
+    the saved report drops, are withheld until ``complete``, so the text returned
+    for a longer response always starts with the text returned for a shorter one.
+    """
+    reasoning, closed, answer = response.partition(THINK_END)
+    if not closed and not thinking:
+        reasoning, answer = "", response
+    elif not closed and not complete:
+        # The closing tag may still be arriving.
+        for length in range(len(THINK_END) - 1, 0, -1):
+            if reasoning.endswith(THINK_END[:length]):
+                reasoning = reasoning[:-length]
+                break
+    if complete:
+        answer = re.sub(r"\s*<answer>\s*</answer>\s*$", "", answer)
+    elif closed or not thinking:
+        # Withhold the longest tail that, ignoring whitespace, starts the empty element.
+        keep = tail = len(answer.rstrip())
+        compact = ""
+        while tail and len(compact) < len(_EMPTY_ANSWER):
+            tail -= 1
+            if not answer[tail].isspace():
+                compact = answer[tail] + compact
+                if _EMPTY_ANSWER.startswith(compact):
+                    keep = tail
+        answer = answer[:keep]
+    text = f"[thinking] {reasoning.strip()}" if reasoning.strip() else ""
+    if closed or not thinking:
+        text += ("\n\n" if text else "") + answer.strip()
+    return text
+
+
 def _chat(args: argparse.Namespace) -> None:
     """Answer each line of standard input about one CT until an empty line or end of input.
 
     Earlier questions and answers are replayed with each new one, so follow-ups can
     refer back. Turn ``N`` writes its files to ``turn-NNN`` under the output folder.
+    Each answer is printed as it is generated.
     """
     interactive = sys.stdin.isatty()
     if interactive:
@@ -167,20 +207,34 @@ def _chat(args: argparse.Namespace) -> None:
             question = sys.stdin.readline().strip()
             if not question:
                 break
-            result = session.run(
-                output_dir=args.output_dir / f"turn-{len(history) + 1:03d}",
-                prompt=question,
-                history=history,
-                enable_thinking=args.enable_thinking,
-                max_new_tokens=args.max_new_tokens,
-                overwrite=args.overwrite,
-            )
+            response = printed = ""
+
+            def show(piece: str, *, complete: bool = False) -> None:
+                nonlocal response, printed
+                response += piece
+                text = _shown(response, thinking=args.enable_thinking, complete=complete)
+                if text.startswith(printed):
+                    print(text[len(printed) :], end="", flush=True)
+                    printed = text
+                elif complete:  # never lose the answer to a display mismatch
+                    print(f"\n{text}", end="", flush=True)
+
+            try:
+                result = session.run(
+                    output_dir=args.output_dir / f"turn-{len(history) + 1:03d}",
+                    prompt=question,
+                    history=history,
+                    enable_thinking=args.enable_thinking,
+                    max_new_tokens=args.max_new_tokens,
+                    overwrite=args.overwrite,
+                    on_text=show,
+                )
+            finally:
+                # Also ends the line of a partial answer when generation fails.
+                show("", complete=True)
+                print(flush=True)
             details = cast(dict[str, object], result["details"])
-            answer = cast(str, details["report"])
-            if "thinking" in details:
-                print(f"[thinking] {details['thinking']}\n")
-            print(answer, flush=True)
-            history.append((question, answer))
+            history.append((question, cast(str, details["report"])))
 
 
 def _commit(value: str) -> str:

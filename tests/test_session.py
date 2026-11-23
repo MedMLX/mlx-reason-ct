@@ -127,6 +127,37 @@ def test_session_rejects_source_rewrite_with_preserved_size_and_mtime(
             session.run(output_dir=tmp_path / "changed", max_new_tokens=2)
 
 
+def test_session_streams_the_response_as_decoded_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "ct.nii"
+    write_ct(source)
+
+    def load_assets(model_dir: Path) -> SmallProcessor:
+        return SmallProcessor()
+
+    def load_model(model_dir: Path, *, precision: str) -> SmallModel:
+        return SmallModel()
+
+    monkeypatch.setattr(api, "_load_assets", load_assets)
+    monkeypatch.setattr(api, "_load_model", load_model)
+    pieces: list[str] = []
+    with api.CTSession(image_path=source, weights_path=tmp_path, anatomy_region=None) as session:
+        result = session.run(output_dir=tmp_path / "out", max_new_tokens=2, on_text=pieces.append)
+    assert "".join(pieces) == cast(dict[str, object], result["details"])["report"] == "finding"
+
+    # A character split across tokens is delivered once, when its last byte arrives.
+    pieces.clear()
+
+    def decode(tokens: list[int]) -> str:
+        return bytes(tokens).decode(errors="replace")
+
+    on_token = api.text_stream(decode, pieces.append)
+    for byte in "né 肝".encode():
+        on_token(byte)
+    assert pieces == ["n", "é", " ", "肝"]
+
+
 @pytest.mark.parametrize("preexisting", [False, True])
 def test_session_restores_report_set_when_run_record_write_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, preexisting: bool

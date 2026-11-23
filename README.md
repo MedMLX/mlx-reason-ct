@@ -67,9 +67,10 @@ mlx-reason-ct chat --input ct.nii.gz --model-dir models --output-dir conversatio
 
 `verify` checks the manifest metadata and that the runtime files and all 35 shards are
 present; it does not read their contents. `chat` keeps the model loaded and answers each
-line you type about the same CT, passing the earlier turns as history; turn *N* is written
-to `turn-NNN` under the output folder. `report` prints the `run.json` record and writes the
-answer to `report.txt` in the output folder; it takes:
+line you type about the same CT, printing the answer as it is generated and passing the
+earlier turns as history; turn *N* is written to `turn-NNN` under the output folder.
+`report` prints the `run.json` record and writes the answer to `report.txt` in the output
+folder; it takes:
 
 | Option | Meaning |
 | :--- | :--- |
@@ -159,6 +160,10 @@ visual weights, so a session serves one CT at the one-shot peak memory. Its
 `history` is a sequence of already-answered `(question, answer)` pairs, oldest first.
 
 - A changed CT file is rejected; a new CT, model or precision needs a new session.
+- `on_text=callback` on a session's `run` streams the response: the callback receives each
+  new piece of text as it is generated. The pieces are the raw response, before the
+  cleanup that gives `details["report"]`, so with thinking enabled they include the
+  reasoning and `</think>`.
 - After its first call, a session decodes only the end of each prompt and reuses the
   decoder state of the CT tokens before it, so later questions return much sooner.
   `prefill_reuse="exact"` (the default) reproduces the logits of a whole prefill.

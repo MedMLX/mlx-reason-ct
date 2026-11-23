@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
@@ -189,6 +189,7 @@ def generate(
     prefix: PromptPrefix | None = None,
     cache_chunk_size: int = 0,
     constraint: ChoiceConstraint | None = None,
+    on_token: Callable[[int], None] | None = None,
 ) -> tuple[list[int], dict[str, object]]:
     """Greedy generation with the pinned EOS set and request-owned hybrid cache.
 
@@ -208,6 +209,8 @@ def generate(
             multiple of 256 allocates capacity in chunks, without token eviction.
         constraint: Optional request-owned LLGuidance choice constraint. Raw
             model logits are unchanged; only greedy token selection is restricted.
+        on_token: Called with each generated token id, in order, as soon as it is
+            read from the GPU; a constrained answer is delivered once it is complete.
 
     Returns:
         ``(token_ids, metrics)``. Generation stops at the first EOS id or at
@@ -299,6 +302,8 @@ def generate(
             if not bool(finite.item()):
                 raise ModelExecutionError("NV-Reason-CT produced nonfinite logits")
             output.append(int(cast(int, choice.item())))
+            if on_token is not None:
+                on_token(output[-1])
             if output[-1] in model.eos_ids or index + 1 == max_new_tokens:
                 break
             if len(output) in {1, 8, 32, 128, 256, 512, 1024, 2048, 4096}:
@@ -337,6 +342,9 @@ def generate(
             output.append(constraint.sample(logit[0, -1], model.eos_ids))
             unfed.append(output[-1])
         del output[max_new_tokens:]
+        if on_token is not None:
+            for token in output:
+                on_token(token)
         growth.append({"decoded_tokens": decoded, "cache_bytes": cache.nbytes})
         metrics["choice_probability"] = constraint.probability
         if constraint.probabilities is not None:
@@ -567,6 +575,31 @@ def _finish_report(
     return result
 
 
+def text_stream(
+    decode: Callable[[list[int]], str], on_text: Callable[[str], None]
+) -> Callable[[int], None]:
+    """Return a token callback that passes ``on_text`` each new piece of decoded text.
+
+    The whole sequence is decoded again at every token, because a token's text can
+    depend on its neighbors. A character whose bytes span several tokens decodes to
+    U+FFFD until the last one arrives, so text ending in it is held back; the
+    pieces delivered concatenate to a prefix of the final ``decode`` result.
+    """
+    tokens: list[int] = []
+    sent = ""
+
+    def on_token(token: int) -> None:
+        nonlocal sent
+        tokens.append(token)
+        text = decode(tokens)
+        if text.endswith("\ufffd") or not text.startswith(sent) or text == sent:
+            return
+        on_text(text[len(sent) :])
+        sent = text
+
+    return on_token
+
+
 def ct_file(image_path: PathLike) -> Path:
     """Return the absolute CT path, refusing anything but an existing NIfTI file."""
     image = input_file("image_path", image_path).resolve()
@@ -711,8 +744,17 @@ class CTSession:
         response_choices: Sequence[str] | None = None,
         tool_choice: str | None = None,
         overwrite: bool = False,
+        on_text: Callable[[str], None] | None = None,
     ) -> dict[str, object]:
         """Write one report or answer for the session's CT; see ``run``.
+
+        ``on_text`` receives the response as it is generated: each call passes the
+        next piece of decoded text, and the pieces concatenate to the model's raw
+        response. That is the text before the cleanup that produces
+        ``details["report"]``, so it still holds the reasoning and ``</think>``
+        with thinking enabled and any trailing ``<answer></answer>``. A constrained
+        answer is delivered only once it is complete. The callback runs on the
+        calling thread between decoding steps; an exception it raises ends the call.
 
         Raises:
             RuntimeError: The session is closed.
@@ -756,6 +798,9 @@ class CTSession:
                 prefix=self._prefix,
                 cache_chunk_size=self._chunk_size,
                 constraint=constraint,
+                on_token=(
+                    None if on_text is None else text_stream(prepared.processor.decode, on_text)
+                ),
             )
             if self._stamp != self._source_stamp():
                 raise InvalidInputError(
