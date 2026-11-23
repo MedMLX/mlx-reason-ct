@@ -18,7 +18,9 @@ from mlx_reason_ct._payloads import JsonValue
 from mlx_reason_ct.constrained import validate_response_choices
 
 if TYPE_CHECKING:
-    from mlx_reason_ct._native_types import Array, GenerationModel, Mlx
+    from medmlx_core.typing import MlxRuntime
+
+    from mlx_reason_ct._native_types import Array, GenerationModel
     from mlx_reason_ct.constrained import ChoiceConstraint
     from mlx_reason_ct.ct_crop import CTCrop
     from mlx_reason_ct.mlx_model import DecoderCache, NativeModel
@@ -503,7 +505,7 @@ def _finish_report(
     tokens: list[int],
     metrics: dict[str, object],
     *,
-    mx: Mlx,
+    mx: MlxRuntime,
     started: float,
     precision: str,
     anatomy_region: str | None,

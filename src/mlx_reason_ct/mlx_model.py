@@ -22,9 +22,10 @@ from typing import TYPE_CHECKING, Literal, cast
 
 if TYPE_CHECKING:
     from mlx_reason_ct import gated_delta, source_arithmetic
-    from mlx_reason_ct._native_types import Array, Dtype, Mlx, NeuralRuntime
+    from mlx_reason_ct._native_types import Array, Dtype
 
 import numpy as np
+from medmlx_core.typing import MlxRuntime, NeuralRuntime
 
 from mlx_reason_ct.bf16_gemv import gemv
 from mlx_reason_ct.chunk_delta import chunk_delta
@@ -33,8 +34,8 @@ from mlx_reason_ct.generation_state import cache_capacity
 from mlx_reason_ct.mlx_weights import SHARDS
 from mlx_reason_ct.runtime import import_mlx
 
-mx: Mlx = import_mlx()
-nn: NeuralRuntime = cast("NeuralRuntime", import_module("mlx.nn"))
+mx: MlxRuntime = import_mlx()
+nn: NeuralRuntime = cast(NeuralRuntime, import_module("mlx.nn"))
 # Admit Metal before loading the adapted recurrence kernels.
 if not TYPE_CHECKING:
     gated_delta = import_module("mlx_reason_ct.gated_delta")

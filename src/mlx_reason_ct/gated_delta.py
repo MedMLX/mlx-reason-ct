@@ -14,7 +14,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from mlx_reason_ct._native_types import Array, MetalKernel
+    from mlx_reason_ct._native_types import Array
+
+from medmlx_core.typing import MetalKernel
 
 from mlx_reason_ct.errors import InvalidInputError
 from mlx_reason_ct.runtime import import_mlx
@@ -192,7 +194,7 @@ def gated_delta_kernel(
             "and Dv divisible by 8"
         )
     return _gated_delta_kernel_packed(
-        inputs=[q, k, v, g, beta, state, T],
+        inputs=[q, k, v, g, beta, state, mx.array(T)],
         template=[
             ("InT", q.dtype),
             ("StT", state.dtype),

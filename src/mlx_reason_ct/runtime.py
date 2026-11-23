@@ -5,12 +5,12 @@ from importlib.metadata import version
 from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
-    from mlx_reason_ct._native_types import Mlx
+    from medmlx_core.typing import MlxRuntime
 
 from mlx_reason_ct.errors import MissingDependencyError
 
 
-def import_mlx() -> "Mlx":
+def import_mlx() -> "MlxRuntime":
     """Return the MLX module after requiring macOS arm64 and a loadable Metal runtime.
 
     Raises:
@@ -27,7 +27,7 @@ def import_mlx() -> "Mlx":
     )
 
     try:
-        return cast("Mlx", shared_import_mlx())
+        return cast("MlxRuntime", shared_import_mlx())
     except (ImportError, OSError) as error:
         raise MissingDependencyError(
             "NV-Reason-CT cannot load the MLX Metal runtime; "

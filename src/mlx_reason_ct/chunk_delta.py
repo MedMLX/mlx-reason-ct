@@ -12,12 +12,14 @@ from functools import cache
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from mlx_reason_ct._native_types import Array, MetalKernel, Mlx
+    from mlx_reason_ct._native_types import Array
+
+from medmlx_core.typing import MetalKernel, MlxRuntime
 
 from mlx_reason_ct.errors import InvalidInputError
 from mlx_reason_ct.runtime import import_mlx
 
-mx: Mlx = import_mlx()
+mx: MlxRuntime = import_mlx()
 
 
 @cache
