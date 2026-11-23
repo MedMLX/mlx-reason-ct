@@ -23,7 +23,7 @@ Generate reports and ask questions about 3D chest and abdomen CT, locally on App
 
 | Model | Weights download | Peak MLX memory | Measured on |
 | :--- | ---: | ---: | :--- |
-| `mlx-reason-ct` | 17.4 GB | About 12.5 GB | A chest or abdomen report |
+| `mlx-reason-ct` | 17.4 GB | 12.5 GB | A chest or abdomen report |
 
 ## Install
 
@@ -44,15 +44,13 @@ print(result["details"]["report"])
 
 Set `anatomy_region="abdomen"` for abdominal CT, or use `prompt` to ask a question.
 
-Omitting `weights_path` downloads `MedMLX/MLX-Reason-CT` into the shared MedMLX cache on
-first use; with MedMLX installed, `medmlx setup mlx-reason-ct` downloads it ahead of time.
-For local weights, pass a folder with the converted runtime files and the `mlx/` shard
-layout as `weights_path`.
+Weights download from `MedMLX/MLX-Reason-CT` on first use; `medmlx setup mlx-reason-ct`
+downloads them ahead of time. For local weights, pass a folder with the converted
+runtime files and the `mlx/` shard layout as `weights_path`.
 
 - The bundle stores the weights as FP32 (17.4 GB on disk); they are held in memory as
   their exact BF16 values.
-- Peak MLX memory for a chest or abdomen report is about 12.5 GB; allow more for
-  preprocessing, macOS and other applications.
+- Allow memory beyond the MLX peak for preprocessing, macOS and other applications.
 - Crop whole-body scans to the chest or abdomen before running.
 
 ### Command line
@@ -94,7 +92,7 @@ answer to `report.txt` in the output folder; it takes:
 
 - **Input:** one finite, scalar 3D CT in NIfTI with Hounsfield units and a coded spatial
   transform. Conflicting qform and sform transforms are rejected. Spatial units are
-  converted to millimetres; unknown units are assumed to be millimetres. HU cannot be
+  converted to millimeters; unknown units are assumed to be millimeters. HU cannot be
   verified from the header.
 - **Unsupported:** DICOM, 2D images, video and multi-volume prompts.
 - **Crop fallback:** a chest or abdomen request warns when it falls back to a
@@ -137,7 +135,7 @@ files with `status: failed` and raises; raise `max_new_tokens` and retry.
 
 Both profiles use NVIDIA's BF16 weights unchanged. The published bundle stores them as
 FP32 without retraining.
-Decoding is greedy. Inference requires Apple Silicon with Metal.
+Decoding is greedy.
 
 ### Several questions about one CT
 
@@ -203,7 +201,7 @@ tools = [
         "type": "function",
         "function": {
             "name": "segment_organ",
-            "description": "Segment one organ and measure its volume in millilitres.",
+            "description": "Segment one organ and measure its volume in milliliters.",
             "parameters": {
                 "type": "object",
                 "properties": {"organ": {"type": "string", "enum": ["liver", "spleen"]}},
