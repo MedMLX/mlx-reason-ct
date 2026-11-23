@@ -3,7 +3,7 @@
 from importlib import import_module
 from typing import TYPE_CHECKING
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 
 if TYPE_CHECKING:
     from mlx_reason_ct.medmlx import load_model, run
