@@ -3,7 +3,7 @@
 NV-Reason-CT's learned weights are BF16 values; the FP32 bundle widens them
 losslessly. Single-token decoding is bound by weight bandwidth, so the decoder
 stores its 2-D language-model weights as BF16 and this kernel widens each element
-to FP32 in registers. The source is MLX 0.32.4's non-transposed ``GEMVKernel``
+to FP32 in registers. The source is MLX 0.32.5's non-transposed ``GEMVKernel``
 (``mlx/backend/metal/kernels/gemv.h``) with only the matrix load type changed, and
 ``config`` reproduces that release's ``gemv_axbpy`` tile selection. Products and
 reductions therefore run in MLX's FP32 order: on Metal the outputs were bit-identical
@@ -108,7 +108,7 @@ def _kernel() -> MetalKernel:
 
 
 def config(in_size: int, out_size: int) -> tuple[int, int, int, int, int, int]:
-    """MLX 0.32.4 ``gemv_axbpy`` tiles ``(bm, bn, sm, sn, tm, tn)`` for a row-major matrix."""
+    """MLX 0.32.5 ``gemv_axbpy`` tiles ``(bm, bn, sm, sn, tm, tn)`` for a row-major matrix."""
     bm, bn, sm, sn, tm, tn = (8 if out_size >= 4096 else 4), 1, 1, 32, 4, 4
     if in_size <= 64:
         bm, sm, sn = 1, 8, 4

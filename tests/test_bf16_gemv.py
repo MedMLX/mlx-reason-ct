@@ -40,7 +40,7 @@ def test_invalid_buffers_are_rejected_before_dispatch(
     ids=["qkv", "gate-scalar", "out-proj", "down-proj", "kv-proj"],
 )
 def test_matches_float32_matvec_on_widened_weights(in_size: int, out_size: int) -> None:
-    """Decoder shapes cover every MLX 0.32.4 tile configuration the model reaches."""
+    """Decoder shapes cover every MLX 0.32.5 tile configuration the model reaches."""
     rng = np.random.default_rng(in_size + out_size)
     x = mx.array(rng.standard_normal((1, 1, in_size), dtype=np.float32))
     weight = mx.array(rng.standard_normal((out_size, in_size), dtype=np.float32) * 0.02).astype(

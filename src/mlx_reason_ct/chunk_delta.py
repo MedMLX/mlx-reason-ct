@@ -24,7 +24,7 @@ mx: MlxRuntime = import_mlx()
 
 @cache
 def _triangle_kernel() -> MetalKernel:
-    """Build the FP32 64-row solve with MLX 0.32.4's column reduction order."""
+    """Build the FP32 64-row solve with MLX 0.32.5's column reduction order."""
     return mx.fast.metal_kernel(
         name="reason_ct_triangle_fp32",
         input_names=["input"],

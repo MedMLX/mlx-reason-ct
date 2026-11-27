@@ -50,7 +50,7 @@ and decodes only what follows it.
 | `fast` | The last multiple of 64 tokens before the question | The question, 20–340 tokens | 0.96 GB |
 
 The boundary decides whether two decoder calls repeat the arithmetic of one call
-over the whole prompt. MLX 0.32.4 chooses its Metal matmul kernel from the row
+over the whole prompt. MLX 0.32.5 chooses its Metal matmul kernel from the row
 count, the feed-forward runs in 2,048-row chunks, and the gated-delta recurrence
 runs in 64-token chunks, 16 at a time, with a cumulative-sum partition that the
 source derives from the whole sequence's chunk count (a continuation is told how
@@ -66,7 +66,11 @@ Apple M5 Max, MLX 0.32.4:
   bit-identical to the one-call prefill, and so was the whole decoder cache on
   the 10 prompts where it was compared. On the reference CT above, a one-shot
   run and sessions in both modes produced the same 208 tokens, the report that
-  is token-identical to NVIDIA's implementation.
+  is token-identical to NVIDIA's implementation. MLX 0.32.5 gave the same
+  results: bit-identical logits and decoder cache on 10 prompts over two LUNA16
+  CTs, one of them the reference CT (tool blocks starting the CT 394 tokens in;
+  3,603–3,996 tokens decoded after the boundary), and the same 208-token report
+  one-shot and in both modes.
 - **Fast boundary.** Maximum logit difference 0.04–0.19 against the one-call
   prefill. Over 303 prompts on 22 CT series, 300 gave the tokens of the exact
   mode: all 72 yes/no and left/right choices and all 176 constrained tool calls,

@@ -34,7 +34,7 @@ class PromptPrefix:
     the snapshot.
 
     The boundary decides whether the two calls repeat the arithmetic of one call
-    over the whole prompt. MLX 0.32.4 picks its Metal matmul kernel from the row
+    over the whole prompt. MLX 0.32.5 picks its Metal matmul kernel from the row
     count (thin kernels up to 64 rows, split-K up to 1,024 rows or while the input
     width is at least the row count, a second thin variant below 2,048), the
     feed-forward runs in 2,048-row chunks, and the recurrence in 64-token chunks
