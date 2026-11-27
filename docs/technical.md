@@ -16,14 +16,14 @@ and produced the same report on the measured CT.
 
 ## Measurements
 
-Apple M5 Max (128 GB), MLX 0.32.4, LUNA16 chest CT
+Apple M5 Max (128 GB), MLX 0.32.5 (the `float32` column: 0.4.x on MLX 0.32.4), LUNA16 chest CT
 `1.3.6.1.4.1.14519.5.2.1.6279.6001.105756658031515062000744821260`, default
 structured chest report (13,844 prompt tokens), greedy decoding.
 
 | Measurement | `float32` (0.4.x) | `fast-bf16` |
 | :--- | ---: | ---: |
-| Prompt prefill, warm, 6 paired rounds | 11.89 s | 6.18 s |
-| Full report, `elapsed_s` (load, encode, prefill, 208 tokens) | 17.9 s | 12.4 s |
+| Prompt prefill, warm, median of 12 fresh processes | 11.89 s | 6.55 s |
+| Full report, `elapsed_s` (load, encode, prefill, 208 tokens), median of 12 runs | 17.9 s | 13.0 s |
 | Peak MLX memory | 12.13 GB | 12.19 GB |
 
 - The two profiles generated the same 208 tokens and the same `report.txt`.
@@ -31,11 +31,11 @@ structured chest report (13,844 prompt tokens), greedy decoding.
   peaked at 12.19 GB, the same as the chest report: every scan is resampled to
   one 192³ grid, so the peak does not grow with the input.
 - The source-exact `source-bf16` profile peaked at 12.46 GB; a three-token answer
-  took 380 s, almost all of it in its emulated prefill.
-- Generation runs at 21.3–21.6 ms per token at this context in both profiles,
+  took 419 s, almost all of it in its emulated prefill.
+- Generation runs at about 24 ms per token at this context in both profiles,
   which share the decode path. Each token reads about 9.5 GB (7.2 GB of BF16
   decoder weights, 1.27 GB of LM head, 0.9 GB of FP32 KV cache), about
-  446 GB/s, so decoding is bound by memory bandwidth.
+  about 400 GB/s, so decoding is bound by memory bandwidth.
 
 ## Sessions
 
@@ -58,7 +58,7 @@ many tokens precede it). At the exact boundary every operation meets the kernel
 and chunking it has in the one-call prefill. A short remainder takes the small-row
 kernels, whose products round differently in rare elements.
 
-Apple M5 Max, MLX 0.32.4:
+Apple M5 Max, MLX 0.32.5 (timings) and 0.32.4 (identity checks):
 
 - **Exact boundary.** On 15 prompts over two CTs (reports, yes/no questions,
   thinking, history, and tool blocks that start the CT 277–2,377 tokens into the
@@ -85,13 +85,13 @@ Apple M5 Max, MLX 0.32.4:
   others, and timed five calls per process after two untimed ones; the values
   are the median and range over the processes.
 
-  | Question | 0.7.0 | `exact` | `fast` |
+  | Question | Whole prefill (0.7.0) | `exact` | `fast` |
   | :--- | ---: | ---: | ---: |
-  | `Yes`/`No` answer | 7.7 s (7.3–8.0) | 2.4 s (2.3–2.8) | 0.23 s (0.21–0.24) |
-  | Tool call chosen among ten | 9.7 s (9.2–10.7) | 3.1 s (3.0–3.7) | 0.64 s (0.64–0.70) |
+  | `Yes`/`No` answer | 6.3 s (6.2–6.8) | 2.2 s (2.1–2.6) | 0.20 s (0.18–0.22) |
+  | Tool call chosen among ten | 7.2 s (6.9–8.2) | 2.9 s (2.8–3.1) | 0.36 s (0.35–0.39) |
 
   The first question after the declared tools change rebuilds the kept state
-  and took 9.0–11.2 s in both modes.
+  and took 6.9–8.3 s in both modes.
 - Apple M1 Max (64 GB), MLX 0.32.4: the exact boundary was also bit-identical to
   the one-call prefill, in the logits and the whole decoder cache, on 18 prompts
   over two CTs (reports, yes/no questions, thinking, history, and tool blocks
